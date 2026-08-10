@@ -1,0 +1,379 @@
+local player = game:GetService("Players").LocalPlayer
+local character = player.Character
+local hrp = character:FindFirstChild("HumanoidRootPart")
+local MarketplaceService = game:GetService("MarketplaceService")
+local info = MarketplaceService:GetProductInfo(game.PlaceId)
+local TweenService = game:GetService("TweenService")
+local cashevent = game:GetService("ReplicatedStorage").Network.RemoteEvents.RequestCollectCash
+local backpack = player:WaitForChild("Backpack")
+
+local function getPlayerBase(plr)
+    local plrbase = nil
+
+    for _,v in ipairs(workspace.Bases:GetDescendants()) do
+
+        if v:IsA("UnionOperation") and v.Name == "Board" then
+            local plotinfo = v:FindFirstChild("PlotInfo")
+
+            if not plotinfo then 
+                continue
+            else
+                local playerplot = plotinfo:FindFirstChild("Container"):FindFirstChild("PlayerName")
+
+                if playerplot.Text == plr.Name then
+                    plrbase = v.Parent
+                end
+            end
+        end
+
+    end
+
+    return plrbase
+end
+
+local brModule = require(game:GetService("ReplicatedStorage").Configurations.Modules.ItemsConfigurations)
+local function findBest(_module, folder)
+    local areaPriority = {
+        Common = 1,
+        Uncommon = 2,
+        Rare = 3,
+        Epic = 4,
+        Legendary = 5,
+        Mythic = 6,
+        Divine = 7,
+        Secret = 8,
+        OG = 9,
+        Celestial = 10,
+        Ancient = 11,
+        Transcendent = 12,
+        Eternal = 13,
+        Immortal = 14,
+    }
+
+    local bestItem
+    local bestPriority = 0
+
+    for _, item in ipairs(folder:GetChildren()) do
+        local info = _module[item.Name]
+
+        if info then
+            local priority = areaPriority[info.Area] or 0
+
+            if priority >= 11 then
+                bestPriority = priority
+                bestItem = item
+            end
+        end
+    end
+
+    return bestItem
+end
+
+local plrbase = getPlayerBase(player)
+
+
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+local window = Rayfield:CreateWindow({
+    name = "daxware",
+    subtitle = info.Name,
+})
+
+local home = window:CreateTab({ name = "Home", icon = 93364949241311 })
+local tab2 = window:CreateTab({ name = "Teleports" })
+local misc = window:CreateTab({ name = "Misc" })
+
+local isrunning = false;
+
+
+home:CreateSection({ name = "Money" })
+
+local Autocollect = home:CreateToggle({
+    name = "AutoCollect Money",
+    flag = "autocollect",
+    value = false,
+    callback = function(v)
+        isrunning = v
+        while isrunning do 
+            task.wait(0.25)
+
+            for _,v in ipairs(workspace.Bases[plrbase.Name].Slots:GetChildren()) do
+
+                cashevent:FireServer(
+                    workspace.Bases[plrbase.Name].Slots[v.Name].Money
+                )
+
+            end
+        end
+
+    end,
+})
+
+local stateevent = game:GetService("ReplicatedStorage").Network.RemoteEvents.MutationState
+local actionevent = game:GetService("ReplicatedStorage").Network.RemoteEvents.MutationAction
+local selectedmutation = nil
+local togglestate = false
+local targetmutation = nil
+local mutationUpdated = false
+local mutationTick = 0
+
+
+home:CreateSection({ name = "Mutations" })
+home:CreateDropdown({
+    name = "Select Mutation",
+    multiSelect = false,
+    options = { "Gold", "Diamond", "Galaxy", "Lava", "Rainbow" },
+    value = { "mutation" },
+    callback = function(selected)
+        
+        selectedmutation = selected
+
+    end,
+})
+home:CreateButton({
+    name = "Force Mutation",
+    callback = function()
+
+        local heldTool = character:FindFirstChildOfClass("Tool")
+
+        if not heldTool then
+            firesignal(
+                game:GetService("ReplicatedStorage").Network.RemoteEvents.Announcement.OnClientEvent,
+                "daxware: Please hold a brainrot.",
+                Color3.new(1, 0.32941177487373, 0.32941177487373)
+            )
+            return
+        end
+
+        local toolName = heldTool.Name
+        local startingPos = hrp.CFrame
+        local attempts = 0
+
+        while true do
+
+            attempts += 1
+            print("Attempt:", attempts)
+
+            local oldTick = mutationTick
+
+            hrp.CFrame = CFrame.new(197, -71, 15)
+
+            task.wait(0.15)
+
+            actionevent:FireServer("requestState")
+
+
+            repeat
+                task.wait()
+            until mutationTick > oldTick
+
+            print("Rolled:", targetmutation)
+
+
+            if targetmutation == selectedmutation then
+
+                window:Notify({
+                    title = "Success!",
+                    content = "Found " .. targetmutation .. " after " .. attempts .. " attempts.",
+                    Duration = 5,
+                })
+
+                actionevent:FireServer("mutate")
+
+                hrp.CFrame = startingPos
+                break
+            end
+
+
+            print("Wrong mutation, taking back")
+
+            actionevent:FireServer("takeback")
+            task.wait(0.5)
+
+
+            repeat
+                task.wait()
+            until backpack:FindFirstChild(toolName)
+
+
+            local returnedTool = backpack:FindFirstChild(toolName)
+
+            print("Returned:", returnedTool.Name)
+
+            character.Humanoid:EquipTool(returnedTool)
+
+
+            repeat
+                task.wait()
+            until returnedTool.Parent == character
+
+
+            print("Equipped")
+
+            task.wait(0.25)
+
+        end
+    end,
+})
+
+local toggle1 = home:CreateToggle({
+    name = "Read Mutation State",
+    flag = "toggle_1",
+    value = false,
+    callback = function(v)
+        togglestate = v
+
+        while togglestate do
+            task.wait(0.1)
+
+            if targetmutation then
+                window:Notify({
+                    title = "Mutation State",
+                    content = "Your mutation will be a " .. targetmutation,
+                    Duration = 5,
+                })
+
+                targetmutation = nil
+            end
+        end
+    end,
+})
+
+stateevent.OnClientEvent:Connect(function(data)
+    targetmutation = data.TargetMutation
+    mutationUpdated = true
+    mutationTick += 1
+
+    print("Mutation event:", targetmutation, "Tick:", mutationTick)
+end)
+
+home:CreateSection({ name = "Brainrot" })
+local ag = false
+
+local toggle1 = home:CreateToggle({
+    name = "AutoGrab Brainrots",
+    flag = "ag",
+    value = false,
+    callback = function(v)
+        ag = v
+
+        while ag do
+            task.wait(0.5)
+            
+            local best = findBest(brModule, workspace.Items)
+            if best then
+                local tppart = best:FindFirstChildOfClass("MeshPart")
+
+                if not tppart then
+                    warn("Could not find MeshPart.")
+                else
+                    hrp.CFrame = tppart.CFrame
+                    task.wait(0.5)
+                    local prompt = tppart:FindFirstChild("ProximityPrompt")
+                    if prompt then
+                        fireproximityprompt(prompt, prompt.HoldDuration)
+                        hrp.CFrame = workspace.Bases[plrbase.Name].Player.CFrame
+                        character.Humanoid:UnequipTools()
+                        task.wait(0.5)
+                    end
+                end
+            end
+
+        end
+
+    end,
+})
+
+
+tab2:CreateSection({ name = "Base Teleports" })
+
+tab2:CreateButton({
+    name = "Teleport to Base",
+    callback = function(v)
+        
+        hrp.CFrame = CFrame.new(workspace.Bases[plrbase.Name]:FindFirstChild("Player").CFrame.Position)
+
+    end,
+})
+
+tab2:CreateSection({ name = "Area Teleports" })
+local grid = tab2:CreateGroup()
+local left = grid:CreateGroup({ direction = "column" })
+local right = grid:CreateGroup({ direction = "column" })
+
+left:CreateButton({
+    name = "Teleport to Ancient",
+    callback = function(v)
+        
+        hrp.CFrame = CFrame.new(1, -72, 1678)
+
+    end,
+})
+
+right:CreateButton({
+    name = "Teleport to Transcendant",
+    callback = function(v)
+        
+        hrp.CFrame = CFrame.new(1, -72, 1842)
+
+    end,
+})
+
+left:CreateButton({
+    name = "Teleport to Eternal",
+    callback = function(v)
+        
+        hrp.CFrame = CFrame.new(1, -72, 2001)
+
+    end,
+})
+
+right:CreateButton({
+    name = "Teleport to Immortal",
+    callback = function(v)
+        
+        hrp.CFrame = CFrame.new(1, -72, 2156)
+
+    end,
+})
+
+left:CreateButton({
+    name = "Teleport to OG",
+    callback = function(v)
+        
+        hrp.CFrame = CFrame.new(10, -72, 1366)
+
+    end,
+})
+
+
+--[[ UI Components: 
+
+- Button
+tab2:CreateButton({
+    name = "Button 1",
+    callback = function(v)
+
+    end,
+})
+
+- Toggle
+local toggle1 = tab2:CreateToggle({
+    name = "Toggle 1",
+    flag = "toggle_1",
+    value = false,
+    callback = function(v)
+        
+    end,
+})
+
+sprint:Set(false)
+
+--]]
+
+-- // PUT ANYTHING ABOVE THIS 
+misc:CreateButton({
+    name = "Unload daxware",
+    callback = function()
+        window:Unload()
+    end,
+})
