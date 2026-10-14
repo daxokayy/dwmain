@@ -192,7 +192,7 @@ function UI:CreateWindow(config)
         minimized = false,
         ready = false,
         token = 0,
-        toggleKey = opt(config, "ToggleKey", Enum.KeyCode.RightShift),
+        toggleKey = opt(config, "ToggleKey", Enum.KeyCode.RightControl),
         config = config,
     }, Window)
     w.gui = make("ScreenGui", {
@@ -1426,6 +1426,16 @@ function Tab:AddPreview(config)
             p:_Draw()
         end
     end
+    grid.ZIndex = 1
+    p.humanoid.ZIndex = 2
+    p.highlight.ZIndex = 3
+    p.circle.ZIndex = 4
+    p.line.ZIndex = 5
+    p.center.ZIndex = 6
+    p.dot.ZIndex = 6
+    p.box.ZIndex = 7
+    p.nameLabel.ZIndex = 8
+
     p:_Style(false)
     table.insert(self.elements, p)
     self:_Arrange()
@@ -1907,4 +1917,3 @@ Group.CreateSlider = Group.AddSlider
 Group.CreateButton = Group.AddButton
 UI.createwindow = UI.CreateWindow
 return UI
-
