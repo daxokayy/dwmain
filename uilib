@@ -1,0 +1,1910 @@
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ContentProvider = game:GetService("ContentProvider")
+local UI = {}
+local Window, Tab, Group, Preview = {}, {}, {}, {}
+Window.__index = Window
+Tab.__index = Tab
+Group.__index = Group
+Preview.__index = Preview
+local C = {
+    Background = Color3.fromRGB(18, 20, 22),
+    Card = Color3.fromRGB(22, 24, 26),
+    Border = Color3.fromRGB(48, 51, 55),
+    Text = Color3.fromRGB(242, 242, 244),
+    Muted = Color3.fromRGB(171, 173, 182),
+    Subtle = Color3.fromRGB(122, 126, 137),
+    Accent = Color3.fromRGB(247, 125, 149),
+    Track = Color3.fromRGB(64, 66, 73),
+}
+local roleColors = {
+    Murderer = Color3.fromRGB(255, 75, 75),
+    Sheriff = Color3.fromRGB(80, 155, 255),
+    Innocent = Color3.fromRGB(90, 230, 120),
+    Hero = Color3.fromRGB(80, 210, 255),
+}
+
+local function opt(c, key, fallback)
+    local value = c[key]
+    if value == nil then
+        value = c[key:sub(1, 1):lower() .. key:sub(2)]
+    end
+    if value == nil then
+        return fallback
+    end
+    return value
+end
+
+local function make(class, props, parent)
+    local v = Instance.new(class)
+    for k, x in pairs(props) do
+        v[k] = x
+    end
+    v.Parent = parent
+    return v
+end
+
+local function round(v, n)
+    make("UICorner", {
+        CornerRadius = UDim.new(0, n or 6),
+    }, v)
+end
+
+local function border(v, color, width)
+    return make("UIStroke", {
+        Color = color or C.Border,
+        Thickness = width or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, v)
+end
+
+local function label(parent, name, text, size, position, dimensions, color, bold)
+    return make("TextLabel", {
+        Name = name,
+        Text = text,
+        TextSize = size,
+        Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+        TextColor3 = color or C.Text,
+        BackgroundTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = position or UDim2.new(),
+        Size = dimensions or UDim2.fromScale(1, 1),
+    }, parent)
+end
+
+local function hit(parent, name, position, size)
+    return make("TextButton", {
+        Name = name,
+        Text = "",
+        AutoButtonColor = false,
+        BackgroundTransparency = 1,
+        Position = position or UDim2.new(),
+        Size = size or UDim2.fromScale(1, 1),
+    }, parent)
+end
+
+local function asset(id)
+    id = tostring(id)
+    return id:match("^%d+$") and "rbxassetid://" .. id or id
+end
+
+local function side(value)
+    value = string.lower(value or "left")
+    assert(value == "left" or value == "right", "Side must be left or right")
+    return value
+end
+
+local function listen(owner, signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(owner.connections, c)
+    return c
+end
+
+local function disconnect(owner)
+    for _, c in ipairs(owner.connections) do
+        c:Disconnect()
+    end
+    table.clear(owner.connections)
+end
+
+local function animate(w, object, props, duration, style, direction)
+    if w.destroyed or not object.Parent then
+        return
+    end
+    local channels = w.tweens[object]
+    if not channels then
+        channels = {}
+        w.tweens[object] = channels
+    end
+    for property, value in pairs(props) do
+        if channels[property] then
+            channels[property]:Cancel()
+        end
+        local t = TweenService:Create(
+            object,
+            TweenInfo.new(
+                duration or 0.16,
+                style or Enum.EasingStyle.Quad,
+                direction or Enum.EasingDirection.Out
+            ),
+            {
+                [property] = value,
+            }
+        )
+        channels[property] = t
+        t:Play()
+    end
+end
+
+local function cancel(w, object)
+    local channels = w.tweens[object]
+    if channels then
+        for _, t in pairs(channels) do
+            t:Cancel()
+        end
+    end
+    w.tweens[object] = nil
+end
+
+local function call(w, callback, value)
+    if callback and not w.destroyed then
+        task.spawn(function()
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[daxware] Callback:", err)
+            end
+        end)
+    end
+end
+
+local function elementSide(self, value)
+    if self.destroyed then
+        return
+    end
+    self.side = side(value)
+    self.frame.Parent = self.tab.columns[self.side]
+    if self.tab._Arrange then
+        self.tab:_Arrange()
+    end
+end
+
+function UI:CreateWindow(config)
+    config = config or {}
+    local size = opt(config, "Size", Vector2.new(700, 499))
+    assert(
+        typeof(size) == "Vector2" and size.X >= 400 and size.Y >= 300,
+        "Size must be a Vector2 at least 400 x 300"
+    )
+    local w = setmetatable({
+        connections = {},
+        tweens = setmetatable({}, {
+            __mode = "k",
+        }),
+        ticks = {},
+        tabs = {},
+        destroyed = false,
+        unloaded = false,
+        accent = opt(config, "Accent", C.Accent),
+        size = size,
+        visible = true,
+        minimized = false,
+        ready = false,
+        token = 0,
+        toggleKey = opt(config, "ToggleKey", Enum.KeyCode.RightShift),
+        config = config,
+    }, Window)
+    w.gui = make("ScreenGui", {
+        Name = opt(config, "Name", "daxwareUI"),
+        ResetOnSpawn = false,
+        DisplayOrder = opt(config, "DisplayOrder", 100),
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        IgnoreGuiInset = opt(config, "IgnoreGuiInset", true),
+    }, opt(config, "Parent", Players.LocalPlayer:WaitForChild("PlayerGui")))
+    w.root = make("CanvasGroup", {
+        Name = "Window",
+        BackgroundColor3 = C.Background,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0, 0),
+        Position = opt(config, "Position", UDim2.fromScale(0.5, 0.5)),
+        Size = UDim2.fromOffset(size.X, size.Y),
+        ClipsDescendants = true,
+        GroupColor3 = Color3.new(1, 1, 1),
+        GroupTransparency = 1,
+        Visible = false,
+    }, w.gui)
+    round(w.root, 8)
+    w.outline = border(w.root)
+    w.scale = make("UIScale", {
+        Scale = 1,
+    }, w.root)
+    w.header = make("Frame", {
+        Name = "Header",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 54),
+        Active = true,
+    }, w.root)
+    label(
+        w.header,
+        "Title",
+        opt(config, "Title", "daxware"),
+        25,
+        UDim2.fromOffset(18, 9),
+        UDim2.new(1, -120, 0, 37),
+        C.Text,
+        true
+    )
+    w.headerDivider = make("Frame", {
+        Name = "Divider",
+        BackgroundColor3 = C.Border,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 54),
+        Size = UDim2.new(1, 0, 0, 1),
+    }, w.header)
+    local mini = hit(w.header, "Minimize", UDim2.new(1, -78, 0, 15), UDim2.fromOffset(23, 26))
+    local close = hit(w.header, "Close", UDim2.new(1, -37, 0, 15), UDim2.fromOffset(23, 26))
+    make("Frame", {
+        BackgroundColor3 = C.Muted,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(6, 12),
+        Size = UDim2.fromOffset(12, 1),
+    }, mini)
+    for _, angle in
+        {
+            45,
+            -45,
+        }
+    do
+        make("Frame", {
+            BackgroundColor3 = C.Muted,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(4, 12),
+            Size = UDim2.fromOffset(16, 1),
+            Rotation = angle,
+        }, close)
+    end
+    w.nav = make("ScrollingFrame", {
+        Name = "Tabs",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(18, 54),
+        Size = UDim2.fromOffset(size.X - 36, 38),
+        ScrollBarThickness = 0,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+    }, w.root)
+    make("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, w.nav)
+    make("Frame", {
+        Name = "NavigationDivider",
+        BackgroundColor3 = C.Border,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 91),
+        Size = UDim2.new(1, 0, 0, 1),
+    }, w.root)
+    w.body = make("Frame", {
+        Name = "Pages",
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        Position = UDim2.fromOffset(0, 92),
+        Size = UDim2.fromOffset(size.X, size.Y - 127),
+    }, w.root)
+    w.footer = make("Frame", {
+        Name = "Footer",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, size.Y - 35),
+        Size = UDim2.fromOffset(size.X, 35),
+    }, w.root)
+    make("Frame", {
+        BackgroundColor3 = C.Border,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 1),
+    }, w.footer)
+    local dot = make("Frame", {
+        Name = "StatusDot",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 18, 0.5, 0),
+        Size = UDim2.fromOffset(9, 9),
+    }, w.footer)
+    round(dot, 9)
+    w.status = label(
+        w.footer,
+        "Status",
+        opt(config, "Status", "Active"),
+        13,
+        UDim2.fromOffset(35, -1),
+        UDim2.new(1, -140, 1, 0),
+        C.Muted
+    )
+    local version = label(
+        w.footer,
+        "Version",
+        opt(config, "Version", "v1.2"),
+        12,
+        UDim2.new(1, -110, 0, 0),
+        UDim2.new(0, 92, 1, 0),
+        C.Muted
+    )
+    version.TextXAlignment = Enum.TextXAlignment.Right
+    local function fit()
+        local viewport = w.gui.AbsoluteSize
+        w.fit = math.min(
+            opt(config, "Scale", 1),
+            math.max(0.1, (viewport.X - 24) / size.X),
+            math.max(0.1, (viewport.Y - 24) / size.Y)
+        )
+        if w.ready then
+            w.scale.Scale = w.fit * (w.visible and 1 or 0.96)
+        end
+        if w.positionGoal then
+            w.positionGoal = w:_ClampPosition(w.positionGoal)
+        end
+    end
+    listen(w, w.gui:GetPropertyChangedSignal("AbsoluteSize"), fit)
+    fit()
+    local center = w.root.Position
+    w.root.Position = UDim2.new(
+        center.X.Scale,
+        center.X.Offset - size.X * w.fit / 2,
+        center.Y.Scale,
+        center.Y.Offset - size.Y * w.fit / 2
+    )
+    local drag, start, initial
+    w.positionGoal = w:_ClampPosition(w.root.Position)
+    w.root.Position = w.positionGoal
+    listen(w, w.header.InputBegan, function(input)
+        if
+            w.ready
+            and w.visible
+            and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+            and input.Position.X < mini.AbsolutePosition.X
+        then
+            drag = input
+            start = input.Position
+            initial = w.positionGoal
+        end
+    end)
+    listen(w, UIS.InputChanged, function(input)
+        if
+            drag
+            and (
+                input == drag
+                or (
+                    drag.UserInputType == Enum.UserInputType.MouseButton1
+                    and input.UserInputType == Enum.UserInputType.MouseMovement
+                )
+            )
+        then
+            local d = input.Position - start
+            w.positionGoal = w:_ClampPosition(
+                UDim2.new(
+                    initial.X.Scale,
+                    initial.X.Offset + d.X,
+                    initial.Y.Scale,
+                    initial.Y.Offset + d.Y
+                )
+            )
+        end
+    end)
+    listen(w, UIS.InputEnded, function(input)
+        if input == drag then
+            drag = nil
+        end
+    end)
+    listen(w, UIS.WindowFocusReleased, function()
+        drag = nil
+    end)
+    listen(w, mini.Activated, function()
+        w:Minimize(not w.minimized)
+    end)
+    listen(w, close.Activated, function()
+        w:SetVisible(false)
+    end)
+    listen(w, UIS.InputBegan, function(input, processed)
+        if
+            w.ready
+            and not processed
+            and not UIS:GetFocusedTextBox()
+            and input.KeyCode == w.toggleKey
+        then
+            w:SetVisible(not w.visible)
+        end
+    end)
+    for _, button in
+        {
+            mini,
+            close,
+        }
+    do
+        for _, glyph in button:GetChildren() do
+            if glyph:IsA("Frame") then
+                listen(w, button.MouseEnter, function()
+                    animate(w, glyph, {
+                        BackgroundColor3 = button == close and w.accent or C.Text,
+                    }, 0.12)
+                end)
+                listen(w, button.MouseLeave, function()
+                    animate(w, glyph, {
+                        BackgroundColor3 = C.Muted,
+                    }, 0.12)
+                end)
+            end
+        end
+    end
+    listen(w, RunService.RenderStepped, function(dt)
+        if not w.visible or w.destroyed then
+            return
+        end
+        local alpha = 1 - math.exp(-28 * math.min(dt, 0.1))
+        if w.root.Position ~= w.positionGoal then
+            local p = w.root.Position:Lerp(w.positionGoal, alpha)
+            if
+                math.abs(p.X.Offset - w.positionGoal.X.Offset)
+                    + math.abs(p.Y.Offset - w.positionGoal.Y.Offset)
+                < 0.1
+            then
+                p = w.positionGoal
+            end
+            w.root.Position = p
+        end
+        for _, tick in pairs(w.ticks) do
+            tick(alpha, dt)
+        end
+    end)
+    listen(w, w.gui.Destroying, function()
+        if not w.destroyed then
+            w:Destroy()
+        end
+    end)
+    task.defer(function()
+        if w.destroyed then
+            return
+        end
+        if opt(config, "Loading", true) then
+            w:_Load()
+        else
+            w.ready = true
+            w.root.Visible = true
+            w:SetVisible(true)
+        end
+    end)
+    return w
+end
+
+function Window:_ClampPosition(position, targetSize)
+    local viewport = self.gui.AbsoluteSize
+    local scale = self.fit or 1
+    local width = (targetSize and targetSize.X or self.root.Size.X.Offset) * scale
+    local x = position.X.Scale * viewport.X + position.X.Offset
+    local y = position.Y.Scale * viewport.Y + position.Y.Offset
+    return UDim2.fromOffset(
+        math.clamp(x, 8, math.max(8, viewport.X - width - 8)),
+        math.clamp(y, 8, math.max(8, viewport.Y - 54 * scale - 8))
+    )
+end
+
+function Window:SetVisible(value)
+    if self.destroyed or not self.ready then
+        return
+    end
+    self.visible = value == true
+    self.token += 1
+    local token = self.token
+    self.root.Visible = true
+    animate(self, self.root, {
+        GroupTransparency = self.visible and 0 or 1,
+    }, 0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    animate(self, self.scale, {
+        Scale = self.fit * (self.visible and 1 or 0.96),
+    }, 0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    animate(self, self.outline, {
+        Transparency = self.visible and 0 or 1,
+    }, 0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    task.delay(0.26, function()
+        if not self.destroyed and token == self.token and not self.visible then
+            self.root.Visible = false
+        end
+    end)
+end
+
+function Window:Minimize(value)
+    if self.destroyed or not self.ready then
+        return
+    end
+    self.minimized = value == true
+    self.minToken = (self.minToken or 0) + 1
+    local token = self.minToken
+    self.positionGoal =
+        self:_ClampPosition(self.positionGoal, self.minimized and Vector2.new(276, 54) or self.size)
+    self.headerDivider.Visible = not self.minimized
+    if not self.minimized then
+        self.nav.Visible = true
+        self.body.Visible = true
+        self.footer.Visible = true
+    end
+    animate(self, self.root, {
+        Size = self.minimized and UDim2.fromOffset(276, 54)
+            or UDim2.fromOffset(self.size.X, self.size.Y),
+    }, 0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut)
+    task.delay(0.32, function()
+        if not self.destroyed and token == self.minToken and self.minimized then
+            self.nav.Visible = false
+            self.body.Visible = false
+            self.footer.Visible = false
+        end
+    end)
+end
+
+function Window:SetStatus(text)
+    if not self.destroyed then
+        self.status.Text = tostring(text)
+    end
+end
+
+function Window:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    self.unloaded = true
+    disconnect(self)
+    for object in pairs(self.tweens) do
+        cancel(self, object)
+    end
+    table.clear(self.ticks)
+    for _, tab in ipairs(self.tabs) do
+        tab:Destroy()
+    end
+    self.gui:Destroy()
+end
+Window.Unload = Window.Destroy
+
+function Window:AddTab(config)
+    assert(not self.destroyed, "Window is destroyed")
+    if type(config) == "string" then
+        config = {
+            Name = config,
+        }
+    end
+    config = config or {}
+    local index = #self.tabs + 1
+    local tab = setmetatable({
+        window = self,
+        connections = {},
+        elements = {},
+        destroyed = false,
+        name = opt(config, "Name", "Tab " .. index),
+    }, Tab)
+    tab.button = hit(
+        self.nav,
+        "Tab" .. index,
+        UDim2.new(),
+        UDim2.fromOffset(
+            opt(config, "Width", index == 1 and 150 or math.max(78, #tab.name * 9 + 35)),
+            38
+        )
+    )
+    tab.button.Text = tab.name
+    tab.button.Font = Enum.Font.Gotham
+    tab.button.TextSize = 14
+    tab.button.TextColor3 = C.Muted
+    tab.button.LayoutOrder = index
+    tab.underline = make("Frame", {
+        Name = "Underline",
+        BackgroundColor3 = self.accent,
+        BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 1, -2),
+        Size = UDim2.new(1, 0, 0, 2),
+        Visible = false,
+    }, tab.button)
+    tab.page = make("Frame", {
+        Name = tab.name .. "Page",
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+    }, self.body)
+    label(
+        tab.page,
+        "Title",
+        tab.name,
+        26,
+        UDim2.fromOffset(19, 17),
+        UDim2.new(1, -38, 0, 28),
+        C.Text,
+        true
+    )
+    label(
+        tab.page,
+        "Description",
+        opt(config, "Description", ""),
+        14,
+        UDim2.fromOffset(19, 46),
+        UDim2.new(1, -38, 0, 19),
+        C.Subtle
+    )
+    tab.columns = {}
+    for _, which in
+        {
+            "left",
+            "right",
+        }
+    do
+        local column = make("ScrollingFrame", {
+            Name = which == "left" and "LeftContent" or "RightContent",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = which == "left" and UDim2.fromOffset(18, 76) or UDim2.new(0.5, 4, 0, 76),
+            Size = which == "left" and UDim2.new(0.5, -28, 1, -87) or UDim2.new(0.5, -20, 1, -87),
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 2,
+            ScrollBarImageColor3 = self.accent,
+        }, tab.page)
+        make("UIPadding", {
+            PaddingTop = UDim.new(0, 1),
+            PaddingLeft = UDim.new(0, 1),
+            PaddingRight = UDim.new(0, 1),
+            PaddingBottom = UDim.new(0, 2),
+        }, column)
+        make("UIListLayout", {
+            Name = "GroupLayout",
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 12),
+        }, column)
+        tab.columns[which] = column
+    end
+    listen(tab, tab.button.Activated, function()
+        self:SelectTab(tab)
+    end)
+    listen(tab, tab.button.MouseEnter, function()
+        if self.selected ~= tab then
+            animate(self, tab.button, {
+                TextColor3 = C.Text,
+            }, 0.12)
+        end
+    end)
+    listen(tab, tab.button.MouseLeave, function()
+        animate(self, tab.button, {
+            TextColor3 = self.selected == tab and self.accent or C.Muted,
+        }, 0.12)
+    end)
+    table.insert(self.tabs, tab)
+    if not self.selected then
+        self:SelectTab(tab, true)
+    end
+    return tab
+end
+
+function Window:SelectTab(tab, initial)
+    if self.destroyed then
+        return
+    end
+    if type(tab) == "string" then
+        for _, item in ipairs(self.tabs) do
+            if item.name == tab then
+                tab = item
+                break
+            end
+        end
+    end
+    assert(type(tab) == "table" and tab.window == self and not tab.destroyed, "Invalid tab")
+    if self.selected == tab then
+        return
+    end
+    local previous = self.selected
+    self.selected = tab
+    for _, item in ipairs(self.tabs) do
+        if not item.destroyed then
+            cancel(self, item.page)
+            item.page.Position = UDim2.new()
+            item.page.Visible = item == tab
+            item.underline.Visible = item == tab
+            animate(self, item.button, {
+                TextColor3 = item == tab and self.accent or C.Muted,
+            }, 0.17)
+        end
+    end
+    tab.underline.Size = UDim2.new(0, 0, 0, 2)
+    animate(self, tab.underline, {
+        Size = UDim2.new(1, 0, 0, 2),
+    }, 0.19)
+    if previous and not initial then
+        tab.page.Position = UDim2.fromOffset(10, 0)
+        animate(self, tab.page, {
+            Position = UDim2.new(),
+        }, 0.2)
+    end
+end
+
+function Tab:SetTitle(value)
+    self.name = tostring(value)
+    self.page.Title.Text = self.name
+    self.button.Text = self.name
+end
+
+function Tab:SetDescription(value)
+    self.page.Description.Text = tostring(value)
+end
+
+function Tab:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    disconnect(self)
+    for _, item in ipairs(self.elements) do
+        item:Destroy()
+    end
+    cancel(self.window, self.page)
+    cancel(self.window, self.button)
+    cancel(self.window, self.underline)
+    self.page:Destroy()
+    self.button:Destroy()
+    if self.window.selected == self then
+        self.window.selected = nil
+        if not self.window.destroyed then
+            for _, tab in ipairs(self.window.tabs) do
+                if not tab.destroyed then
+                    self.window:SelectTab(tab)
+                    break
+                end
+            end
+        end
+    end
+end
+
+function Tab:AddGroup(config)
+    assert(not self.destroyed, "Tab is destroyed")
+    config = config or {}
+    local g = setmetatable({
+        window = self.window,
+        tab = self,
+        connections = {},
+        controls = {},
+        destroyed = false,
+        side = side(opt(config, "Side", "left")),
+    }, Group)
+    g.frame = make("Frame", {
+        Name = opt(config, "Name", "Group"),
+        BackgroundColor3 = C.Card,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, -2, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = opt(config, "Order", #self.elements + 1),
+    }, self.columns[g.side])
+    round(g.frame, 6)
+    border(g.frame)
+    make("UIGradient", {
+        Rotation = 25,
+        Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(223, 223, 223)),
+    }, g.frame)
+    make("UIPadding", {
+        PaddingTop = UDim.new(0, 3),
+        PaddingBottom = UDim.new(0, 3),
+    }, g.frame)
+    make("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, g.frame)
+    local title = opt(config, "Title", nil)
+    if title then
+        label(g.frame, "Title", title, 13, UDim2.new(), UDim2.new(1, -26, 0, 27), C.Muted, true).LayoutOrder =
+            0
+    end
+    table.insert(self.elements, g)
+    self:_Arrange()
+    return g
+end
+Group.SetSide = elementSide
+
+function Group:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    disconnect(self)
+    for _, control in ipairs(self.controls) do
+        control:Destroy()
+    end
+    self.frame:Destroy()
+    if not self.tab.destroyed then
+        self.tab:_Arrange()
+    end
+end
+
+local function row(group, name, height)
+    assert(not group.destroyed, "Group is destroyed")
+    local count = #group.controls + 1
+    local f = make("Frame", {
+        Name = name,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, height),
+        LayoutOrder = count,
+    }, group.frame)
+    if count > 1 then
+        make("Frame", {
+            Name = "Divider",
+            BackgroundColor3 = C.Border,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(13, 0),
+            Size = UDim2.new(1, -28, 0, 1),
+        }, f)
+    end
+    return f
+end
+
+local function control(group, frame, config)
+    local c = {
+        window = group.window,
+        connections = {},
+        frame = frame,
+        Instance = frame,
+        destroyed = false,
+        enabled = opt(config, "Enabled", true),
+    }
+    function c:Destroy()
+        if self.destroyed then
+            return
+        end
+        self.destroyed = true
+        disconnect(self)
+        self.window.ticks[self] = nil
+        for _, v in ipairs(self.frame:GetDescendants()) do
+            cancel(self.window, v)
+        end
+        self.frame:Destroy()
+    end
+    function c:SetText(value)
+        if not self.destroyed then
+            self.label.Text = tostring(value)
+        end
+    end
+    function c:SetCallback(callback)
+        assert(callback == nil or type(callback) == "function", "Callback must be a function")
+        self.callback = callback
+    end
+    function c:SetEnabled(value)
+        if self.destroyed then
+            return
+        end
+        self.enabled = value == true
+        self.label.TextTransparency = self.enabled and 0 or 0.55
+        if self.hit then
+            self.hit.Active = self.enabled
+            self.hit.Selectable = self.enabled
+        end
+    end
+    c.callback = opt(config, "Callback", nil)
+    table.insert(group.controls, c)
+    return c
+end
+
+function Group:AddToggle(config)
+    config = config or {}
+    local w = self.window
+    local f = row(self, "Toggle", 34)
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Toggle"),
+        15,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(1, -65, 1, 0)
+    )
+    c.hit = hit(f, "Hit")
+    local track = make("Frame", {
+        Name = "Track",
+        BackgroundColor3 = C.Track,
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -47, 0.5, -9.5),
+        Size = UDim2.fromOffset(32, 19),
+    }, f)
+    round(track, 19)
+    local knob = make("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = Color3.fromRGB(249, 232, 235),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(3, 3),
+        Size = UDim2.fromOffset(13, 13),
+    }, track)
+    round(knob, 13)
+    c.value = opt(config, "Value", false) == true
+    local function paint(smooth)
+        if smooth then
+            animate(w, track, {
+                BackgroundColor3 = c.value and w.accent or C.Track,
+            })
+            animate(w, knob, {
+                Position = UDim2.fromOffset(c.value and 17 or 3, 3),
+            })
+        else
+            track.BackgroundColor3 = c.value and w.accent or C.Track
+            knob.Position = UDim2.fromOffset(c.value and 17 or 3, 3)
+        end
+    end
+    function c:Get()
+        return self.value
+    end
+    function c:Set(value, silent)
+        if self.destroyed then
+            return
+        end
+        value = value == true
+        local changed = self.value ~= value
+        self.value = value
+        self.frame:SetAttribute("Value", value)
+        paint(true)
+        if changed and not silent then
+            call(w, self.callback, value)
+        end
+    end
+    listen(c, c.hit.Activated, function()
+        if c.enabled then
+            c:Set(not c.value)
+        end
+    end)
+    f:SetAttribute("Value", c.value)
+    paint(false)
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddSlider(config)
+    config = config or {}
+    local w = self.window
+    local min, max, step = opt(config, "Min", 0), opt(config, "Max", 100), opt(config, "Step", 1)
+    assert(max > min and step > 0, "Slider requires Max > Min and Step > 0")
+    local f = row(self, "Slider", 52.5)
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Slider"),
+        15,
+        UDim2.fromOffset(13, 3),
+        UDim2.new(1, -110, 0, 23)
+    )
+    local number =
+        label(f, "ValueLabel", "", 15, UDim2.new(1, -100, 0, 3), UDim2.fromOffset(85, 23), C.Muted)
+    number.TextXAlignment = Enum.TextXAlignment.Right
+    local track = make("Frame", {
+        Name = "Track",
+        BackgroundColor3 = C.Track,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(14, 38),
+        Size = UDim2.new(1, -29, 0, 4),
+    }, f)
+    round(track, 4)
+    local fill = make("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0, 1),
+    }, track)
+    round(fill, 4)
+    local knob = make("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0, 0.5),
+        Size = UDim2.fromOffset(12, 12),
+    }, track)
+    round(knob, 12)
+    c.hit = hit(f, "Hit", UDim2.fromOffset(7, 27), UDim2.new(1, -14, 0, 25))
+    local active
+    local decimals = 0
+    while
+        decimals < 6
+        and math.abs(step * 10 ^ decimals - math.round(step * 10 ^ decimals)) > 0.000001
+    do
+        decimals += 1
+    end
+    function c:Get()
+        return self.value
+    end
+    function c:Set(value, silent)
+        if self.destroyed then
+            return
+        end
+        assert(type(value) == "number" and value == value, "Slider value must be a number")
+        value = math.clamp(min + math.round((value - min) / step) * step, min, max)
+        local changed = self.value ~= value
+        self.value = value
+        self.goal = (value - min) / (max - min)
+        f:SetAttribute("Value", value)
+        number.Text = string.format("%." .. decimals .. "f", value) .. opt(config, "Suffix", "")
+        if changed and not silent then
+            call(w, self.callback, value)
+        end
+    end
+    c:Set(opt(config, "Value", min), true)
+    c.display = c.goal
+    fill.Size = UDim2.fromScale(c.display, 1)
+    knob.Position = UDim2.fromScale(c.display, 0.5)
+    local function update(input)
+        if not c.enabled or track.AbsoluteSize.X <= 0 then
+            return
+        end
+        c:Set(
+            min
+                + math.clamp(
+                        (input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X,
+                        0,
+                        1
+                    )
+                    * (max - min)
+        )
+    end
+    listen(c, c.hit.InputBegan, function(input)
+        if
+            c.enabled
+            and (
+                input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            active = input
+            update(input)
+        end
+    end)
+    listen(c, UIS.InputChanged, function(input)
+        if
+            active
+            and w.visible
+            and w.selected == self.tab
+            and (
+                input == active
+                or (
+                    active.UserInputType == Enum.UserInputType.MouseButton1
+                    and input.UserInputType == Enum.UserInputType.MouseMovement
+                )
+            )
+        then
+            update(input)
+        end
+    end)
+    listen(c, UIS.InputEnded, function(input)
+        if input == active then
+            active = nil
+        end
+    end)
+    listen(c, UIS.WindowFocusReleased, function()
+        active = nil
+    end)
+    w.ticks[c] = function(alpha)
+        if math.abs(c.goal - c.display) > 0.00001 then
+            c.display += (c.goal - c.display) * alpha
+            fill.Size = UDim2.fromScale(c.display, 1)
+            knob.Position = UDim2.fromScale(c.display, 0.5)
+        end
+    end
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddButton(config)
+    config = config or {}
+    local w = self.window
+    local f = row(self, "Button", 34)
+    local c = control(self, f, config)
+    c.hit = hit(f, "Hit")
+    c.hit.BackgroundColor3 = Color3.fromRGB(47, 33, 40)
+    round(c.hit, 5)
+    c.label = label(
+        c.hit,
+        "Label",
+        opt(config, "Name", opt(config, "Text", "Button")),
+        15,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(1, -26, 1, 0)
+    )
+    local hovered = false
+    c.busy = false
+    local function paint(pressed)
+        animate(w, c.hit, {
+            BackgroundTransparency = c.enabled and (pressed and 0.1 or hovered and 0.55 or 1) or 1,
+        }, 0.13)
+    end
+    listen(c, c.hit.MouseEnter, function()
+        hovered = true
+        paint(false)
+    end)
+    listen(c, c.hit.MouseLeave, function()
+        hovered = false
+        paint(false)
+    end)
+    listen(c, c.hit.InputBegan, function(input)
+        if
+            c.enabled
+            and (
+                input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            paint(true)
+        end
+    end)
+    listen(c, c.hit.Activated, function()
+        if not c.enabled or c.busy then
+            return
+        end
+        c.busy = true
+        paint(true)
+        task.spawn(function()
+            local ok, err = pcall(function()
+                if c.callback then
+                    c.callback(c)
+                end
+            end)
+            c.busy = false
+            if not ok then
+                warn("[daxware] Button:", err)
+            end
+            if not c.destroyed then
+                paint(false)
+            end
+        end)
+    end)
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddLabel(config)
+    if type(config) == "string" then
+        config = {
+            Text = config,
+        }
+    end
+    config = config or {}
+    local f = row(self, "Label", opt(config, "Height", 34))
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Text",
+        opt(config, "Text", ""),
+        opt(config, "TextSize", 14),
+        UDim2.fromOffset(13, 2),
+        UDim2.new(1, -26, 1, -4),
+        opt(config, "Color", C.Muted)
+    )
+    c.label.TextWrapped = true
+    return c
+end
+
+function Tab:_Arrange()
+    local first = {}
+    for _, element in ipairs(self.elements) do
+        if not element.destroyed and not first[element.side] then
+            first[element.side] = element
+        end
+    end
+    local raised
+    if
+        first.left
+        and first.left.kind == "preview"
+        and (not first.right or first.right.kind ~= "preview")
+    then
+        raised = "left"
+    elseif
+        first.right
+        and first.right.kind == "preview"
+        and (not first.left or first.left.kind ~= "preview")
+    then
+        raised = "right"
+    end
+    for which, column in pairs(self.columns) do
+        local p = column.Position
+        column.Position = UDim2.new(p.X.Scale, p.X.Offset, 0, which == raised and 17 or 76)
+        column.Size =
+            UDim2.new(column.Size.X.Scale, column.Size.X.Offset, 1, which == raised and -26 or -85)
+    end
+    local rightTitle = raised == "left"
+    self.page.Title.Position = rightTitle and UDim2.new(0.5, 5, 0, 17) or UDim2.fromOffset(19, 17)
+    self.page.Description.Position = rightTitle and UDim2.new(0.5, 5, 0, 46)
+        or UDim2.fromOffset(19, 46)
+    self.page.Title.Size = UDim2.new(0.5, -30, 0, 28)
+    self.page.Description.Size = UDim2.new(0.5, -30, 0, 19)
+end
+
+function Tab:AddPreview(config)
+    assert(not self.destroyed, "Tab is destroyed")
+    config = config or {}
+    local w = self.window
+    local p = setmetatable({
+        window = w,
+        tab = self,
+        connections = {},
+        destroyed = false,
+        kind = "preview",
+        side = side(opt(config, "Side", "right")),
+        mode = string.lower(opt(config, "Type", "aim")),
+        target = opt(config, "Target", nil),
+        goal = nil,
+        fov = opt(config, "Radius", 250),
+        circleVisible = opt(config, "Circle", true),
+        lineVisible = opt(config, "Line", true),
+        espEnabled = true,
+        namesVisible = true,
+        highlightVisible = opt(config, "Highlight", false),
+        role = opt(config, "Role", "Sheriff"),
+        playerName = opt(config, "PlayerName", Players.LocalPlayer.Name),
+    }, Preview)
+    assert(p.mode == "aim" or p.mode == "esp", "Preview Type must be aim or esp")
+    p.target = p.target or (p.mode == "aim" and Vector2.new(0.692, 0.402) or Vector2.new(0.5, 0.46))
+    p.goal = p.target
+    p.displayFov = p.fov
+    p.frame = make("Frame", {
+        Name = p.mode == "aim" and "AimPreview" or "ESPPreview",
+        BackgroundColor3 = C.Card,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, -2, 0, opt(config, "Height", math.max(180, w.size.Y - 157))),
+        ClipsDescendants = true,
+        LayoutOrder = opt(config, "Order", #self.elements + 1),
+    }, self.columns[p.side])
+    round(p.frame, 6)
+    border(p.frame)
+    local grid = make("Frame", {
+        Name = "Grid",
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+    }, p.frame)
+    for i = 1, 9 do
+        make("Frame", {
+            Name = "Vertical" .. i,
+            BackgroundColor3 = C.Border,
+            BackgroundTransparency = 0.4,
+            BorderSizePixel = 0,
+            Position = UDim2.fromScale(i / 10, 0),
+            Size = UDim2.new(0, 1, 1, 0),
+        }, grid)
+    end
+    for i = 1, 8 do
+        make("Frame", {
+            Name = "Horizontal" .. i,
+            BackgroundColor3 = C.Border,
+            BackgroundTransparency = 0.4,
+            BorderSizePixel = 0,
+            Position = UDim2.fromScale(0, i / 9),
+            Size = UDim2.new(1, 0, 0, 1),
+        }, grid)
+    end
+    label(
+        p.frame,
+        "Title",
+        opt(config, "Title", p.mode == "aim" and "Target preview" or "ESP preview"),
+        13,
+        UDim2.fromOffset(12, 5),
+        UDim2.new(1, -24, 0, 22),
+        C.Muted
+    )
+    p.circle = make("Frame", {
+        Name = "Circle",
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.505),
+    }, p.frame)
+    round(p.circle, 999)
+    border(p.circle, w.accent, 1.3)
+    p.line = make("Frame", {
+        Name = "TargetLine",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+    }, p.frame)
+    p.center = make("Frame", {
+        Name = "CenterDot",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.505),
+        Size = UDim2.fromOffset(8, 8),
+    }, p.frame)
+    round(p.center, 8)
+    p.humanoid = make("ImageButton", {
+        Name = "Humanoid",
+        Image = asset(opt(config, "Image", "rbxassetid://7114263327")),
+        BackgroundTransparency = 1,
+        AutoButtonColor = false,
+        ImageColor3 = opt(config, "ImageColor", Color3.fromRGB(125, 125, 125)),
+        AnchorPoint = Vector2.new(0.5, 0.44),
+        ScaleType = Enum.ScaleType.Fit,
+        Size = p.mode == "aim" and UDim2.fromOffset(52, 77) or UDim2.fromOffset(151, 214),
+    }, p.frame)
+    p.dot = make("Frame", {
+        Name = "TargetDot",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(6, 6),
+    }, p.frame)
+    round(p.dot, 6)
+    p.box = make("Frame", {
+        Name = "BoundingBox",
+        BackgroundTransparency = 1,
+    }, p.frame)
+    p.boxStroke = border(p.box, roleColors[p.role] or C.Muted)
+    p.nameLabel = label(p.frame, "NameRole", "", 12, UDim2.new(), UDim2.fromOffset(260, 17))
+    p.nameLabel.AnchorPoint = Vector2.new(0.5, 1)
+    p.nameLabel.Font = Enum.Font.ArialBold
+    p.nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+    p.nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    p.nameLabel.TextStrokeTransparency = 0
+    p.highlight = make("ImageLabel", {
+        Name = "CharacterHighlight",
+        Image = p.humanoid.Image,
+        BackgroundTransparency = 1,
+        AnchorPoint = p.humanoid.AnchorPoint,
+        Size = p.humanoid.Size,
+        ScaleType = Enum.ScaleType.Fit,
+        ImageTransparency = 0.55,
+    }, p.frame)
+    local dragging, start, original
+    local draggable = opt(config, "Draggable", p.mode == "aim")
+    listen(p, p.humanoid.InputBegan, function(input)
+        if
+            draggable
+            and (
+                input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            dragging = input
+            start = Vector2.new(input.Position.X, input.Position.Y)
+            original = p.goal
+        end
+    end)
+    listen(p, UIS.InputChanged, function(input)
+        if not dragging or w.selected ~= self or not w.visible or w.minimized then
+            return
+        end
+        if
+            input == dragging
+            or (
+                dragging.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseMovement
+            )
+        then
+            local size = p.frame.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then
+                return
+            end
+            local d = Vector2.new(input.Position.X, input.Position.Y) - start
+            local point = original + Vector2.new(d.X / size.X, d.Y / size.Y)
+            local width = p.humanoid.AbsoluteSize.X / 2 / size.X
+            local top = p.humanoid.AbsoluteSize.Y * 0.44 / size.Y
+            local bottom = p.humanoid.AbsoluteSize.Y * 0.56 / size.Y
+            p.goal = Vector2.new(
+                math.clamp(point.X, math.min(width, 0.49), math.max(1 - width, 0.51)),
+                math.clamp(point.Y, math.min(top, 0.49), math.max(1 - bottom, 0.51))
+            )
+        end
+    end)
+    listen(p, UIS.InputEnded, function(input)
+        if input == dragging then
+            dragging = nil
+        end
+    end)
+    listen(p, UIS.WindowFocusReleased, function()
+        dragging = nil
+    end)
+    if p.mode == "esp" and opt(config, "CycleRoles", true) then
+        listen(p, p.humanoid.Activated, function()
+            p:SetRole(p.role == "Sheriff" and "Murderer" or "Sheriff")
+        end)
+        local hint = label(
+            p.frame,
+            "Hint",
+            "Click character to switch role",
+            10,
+            UDim2.new(0, 0, 1, -25),
+            UDim2.new(1, 0, 0, 20),
+            C.Subtle
+        )
+        hint.TextXAlignment = Enum.TextXAlignment.Center
+    end
+    listen(p, p.frame:GetPropertyChangedSignal("AbsoluteSize"), function()
+        p:_Draw()
+    end)
+    w.ticks[p] = function(alpha)
+        local dirty = false
+        if (p.goal - p.target).Magnitude > 0.00001 then
+            p.target = p.target:Lerp(p.goal, alpha)
+            dirty = true
+        end
+        if math.abs(p.fov - p.displayFov) > 0.001 then
+            p.displayFov += (p.fov - p.displayFov) * alpha
+            dirty = true
+        end
+        if dirty then
+            p:_Draw()
+        end
+    end
+    p:_Style(false)
+    table.insert(self.elements, p)
+    self:_Arrange()
+    task.defer(function()
+        if not p.destroyed then
+            p:_Draw()
+        end
+    end)
+    return p
+end
+
+function Preview:_Draw()
+    if self.destroyed or self.window.destroyed then
+        return
+    end
+    local size = self.frame.AbsoluteSize / math.max(self.window.scale.Scale, 0.001)
+    if size.X <= 0 or size.Y <= 0 then
+        return
+    end
+    local radius = math.clamp(
+        size.X * 0.351 * (self.displayFov or self.fov) / 250,
+        12,
+        math.min(size.X, size.Y) * 0.48
+    )
+    self.circle.Size = UDim2.fromOffset(radius * 2, radius * 2)
+    self.humanoid.Position = UDim2.fromScale(self.target.X, self.target.Y)
+    self.highlight.Position = self.humanoid.Position
+    local origin = Vector2.new(size.X * 0.5, size.Y * 0.505)
+    local target = Vector2.new(size.X * self.target.X, size.Y * self.target.Y)
+    local delta = target - origin
+    self.inside = delta.Magnitude <= radius
+    self.frame:SetAttribute("TargetInsideCircle", self.inside)
+    local aim = self.mode == "aim"
+    self.circle.Visible = aim and self.circleVisible
+    self.center.Visible = aim
+    self.line.Visible = aim and self.lineVisible and self.inside
+    self.dot.Visible = self.line.Visible
+    self.dot.Position = self.humanoid.Position
+    self.line.Position = UDim2.fromOffset((origin.X + target.X) / 2, (origin.Y + target.Y) / 2)
+    self.line.Size = UDim2.fromOffset(delta.Magnitude, 1)
+    self.line.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+    local hs = self.humanoid.Size
+    self.box.Position =
+        UDim2.fromOffset(target.X - hs.X.Offset / 2 - 10, target.Y - hs.Y.Offset * 0.44 - 3)
+    self.box.Size = UDim2.fromOffset(hs.X.Offset + 20, hs.Y.Offset + 7)
+    self.nameLabel.Position = UDim2.fromOffset(target.X, self.box.Position.Y.Offset - 3)
+end
+
+function Preview:_Style(smooth)
+    if self.destroyed or self.window.destroyed then
+        return
+    end
+    local esp = self.mode == "esp"
+    self.box.Visible = esp
+    self.nameLabel.Visible = esp
+    self.highlight.Visible = esp
+    if not esp then
+        return
+    end
+    local color = roleColors[self.role] or C.Muted
+    self.nameLabel.Text = self.playerName .. " [" .. self.role .. "]"
+    local boxProperties = {
+        Color = color,
+        Transparency = self.espEnabled and 0 or 1,
+    }
+    local showName = self.espEnabled and self.namesVisible
+    local textProperties = {
+        TextColor3 = color,
+        TextTransparency = showName and 0 or 1,
+        TextStrokeTransparency = showName and 0 or 1,
+    }
+    local imageProperties = {
+        ImageColor3 = color,
+        ImageTransparency = self.espEnabled and self.highlightVisible and 0.55 or 1,
+    }
+    if smooth then
+        animate(self.window, self.boxStroke, boxProperties, 0.16)
+        animate(self.window, self.nameLabel, textProperties, 0.16)
+        animate(self.window, self.highlight, imageProperties, 0.16)
+    else
+        for k, v in pairs(boxProperties) do
+            self.boxStroke[k] = v
+        end
+        for k, v in pairs(textProperties) do
+            self.nameLabel[k] = v
+        end
+        for k, v in pairs(imageProperties) do
+            self.highlight[k] = v
+        end
+    end
+end
+
+function Preview:SetTarget(value)
+    if self.destroyed then
+        return
+    end
+    assert(typeof(value) == "Vector2", "Target must be Vector2")
+    self.goal = Vector2.new(math.clamp(value.X, 0, 1), math.clamp(value.Y, 0, 1))
+end
+
+function Preview:GetTarget()
+    return self.target
+end
+
+function Preview:IsInsideCircle()
+    return self.inside == true
+end
+
+function Preview:SetRadius(value)
+    if self.destroyed then
+        return
+    end
+    assert(type(value) == "number" and value >= 0, "Radius must be nonnegative")
+    self.fov = value
+    self:_Draw()
+end
+
+function Preview:SetLineVisible(value)
+    self.lineVisible = value == true
+    self:_Draw()
+end
+
+function Preview:SetCircleVisible(value)
+    self.circleVisible = value == true
+    self:_Draw()
+end
+
+function Preview:SetRole(value)
+    if self.destroyed then
+        return
+    end
+    self.role = tostring(value)
+    self:_Style(true)
+end
+
+function Preview:SetName(value)
+    if self.destroyed then
+        return
+    end
+    self.playerName = tostring(value)
+    self:_Style(true)
+end
+
+function Preview:SetESPEnabled(value)
+    if self.destroyed then
+        return
+    end
+    self.espEnabled = value == true
+    self:_Style(true)
+end
+
+function Preview:SetNamesVisible(value)
+    if self.destroyed then
+        return
+    end
+    self.namesVisible = value == true
+    self:_Style(true)
+end
+
+function Preview:SetHighlightVisible(value)
+    if self.destroyed then
+        return
+    end
+    self.highlightVisible = value == true
+    self:_Style(true)
+end
+
+function Preview:SetImage(value)
+    self.humanoid.Image = asset(value)
+    self.highlight.Image = self.humanoid.Image
+end
+
+function Preview:SetSide(value)
+    elementSide(self, value)
+    self.tab:_Arrange()
+    self:_Draw()
+end
+
+function Preview:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    disconnect(self)
+    self.window.ticks[self] = nil
+    for _, v in self.frame:GetDescendants() do
+        cancel(self.window, v)
+    end
+    self.frame:Destroy()
+    if not self.tab.destroyed then
+        self.tab:_Arrange()
+    end
+end
+
+function Window:_Load()
+    if self.destroyed then
+        return
+    end
+    local l = make("CanvasGroup", {
+        Name = "Loader",
+        BackgroundColor3 = C.Background,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(389, 215),
+        GroupColor3 = Color3.new(1, 1, 1),
+    }, self.gui)
+    round(l, 8)
+    local outline = border(l)
+    local scale = make("UIScale", {
+        Scale = 0.97,
+    }, l)
+    label(
+        l,
+        "Title",
+        opt(self.config, "Title", "daxware"),
+        20,
+        UDim2.fromOffset(18, 9),
+        UDim2.fromOffset(250, 26),
+        C.Text,
+        true
+    )
+    local spinner = make("ImageLabel", {
+        Name = "Spinner",
+        Image = asset(opt(self.config, "SpinnerImage", "111673319252699")),
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 77),
+        Size = UDim2.fromOffset(54, 54),
+        ScaleType = Enum.ScaleType.Fit,
+    }, l)
+    local loading = label(
+        l,
+        "LoadingText",
+        "Loading...",
+        22,
+        UDim2.fromOffset(0, 110),
+        UDim2.fromOffset(389, 30),
+        C.Text,
+        true
+    )
+    loading.TextXAlignment = Enum.TextXAlignment.Center
+    local subtitle = label(
+        l,
+        "Subtitle",
+        "Getting things ready",
+        13,
+        UDim2.fromOffset(0, 142),
+        UDim2.fromOffset(389, 22),
+        C.Subtle
+    )
+    subtitle.TextXAlignment = Enum.TextXAlignment.Center
+    local track = make("Frame", {
+        Name = "Track",
+        BackgroundColor3 = C.Track,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(18, 181),
+        Size = UDim2.fromOffset(309, 7),
+    }, l)
+    round(track, 7)
+    local fill = make("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = self.accent,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0, 1),
+    }, track)
+    round(fill, 7)
+    local percent = label(
+        l,
+        "Percentage",
+        "0%",
+        13,
+        UDim2.fromOffset(333, 171),
+        UDim2.fromOffset(40, 27),
+        C.Muted
+    )
+    percent.TextXAlignment = Enum.TextXAlignment.Center
+    local progress, goal = 0, 0
+    local started = os.clock()
+    self.loader = l
+    self.ticks[l] = function(alpha, dt)
+        spinner.Rotation = (spinner.Rotation + 210 * dt) % 360
+        progress += (goal - progress) * alpha
+        fill.Size = UDim2.fromScale(progress, 1)
+        percent.Text = math.floor(progress * 100 + 0.5) .. "%"
+    end
+    animate(self, scale, {
+        Scale = 1,
+    }, 0.22)
+    local function waitFor(predicate, timeout)
+        local deadline = os.clock() + timeout
+        while not self.destroyed and not predicate() and os.clock() < deadline do
+            task.wait(0.05)
+        end
+        return not self.destroyed and predicate()
+    end
+    waitFor(function()
+        return game:IsLoaded()
+    end, 20)
+    if self.destroyed then
+        return
+    end
+    goal = 0.3
+    subtitle.Text = "Loading preview assets"
+    local assets, seen = {}, {}
+    for _, v in self.gui:GetDescendants() do
+        if
+            (v:IsA("ImageLabel") or v:IsA("ImageButton"))
+            and v.Image ~= ""
+            and not seen[v.Image]
+        then
+            seen[v.Image] = true
+            table.insert(assets, v.Image)
+        end
+    end
+    local done = false
+    local completed = 0
+    local failures = 0
+    task.spawn(function()
+        local ok = pcall(function()
+            ContentProvider:PreloadAsync(assets, function(_, status)
+                completed += 1
+                if status ~= Enum.AssetFetchStatus.Success then
+                    failures += 1
+                end
+                goal = math.max(goal, 0.3 + 0.65 * completed / math.max(#assets, 1))
+            end)
+        end)
+        if not ok then
+            failures += 1
+        end
+        done = true
+    end)
+    waitFor(function()
+        return done
+    end, 12)
+    if self.destroyed then
+        return
+    end
+    subtitle.Text = "Almost ready"
+    goal = 0.95
+    waitFor(function()
+        return os.clock() - started >= opt(self.config, "LoadingDuration", 2.2)
+    end, math.max(1, opt(self.config, "LoadingDuration", 2.2) + 1))
+    goal = 1
+    loading.Text = "Ready"
+    subtitle.Text = "Ready"
+    waitFor(function()
+        return progress > 0.998
+    end, 1)
+    if self.destroyed then
+        return
+    end
+    fill.Size = UDim2.fromScale(1, 1)
+    percent.Text = "100%"
+    task.wait(0.15)
+    if self.destroyed then
+        return
+    end
+    l:SetAttribute("State", "Complete")
+    l:SetAttribute("AssetFailures", failures)
+    self.ready = true
+    self.root.Visible = true
+    self.scale.Scale = self.fit * 0.96
+    self:SetVisible(true)
+    animate(self, l, {
+        GroupTransparency = 1,
+    }, 0.28)
+    animate(self, outline, {
+        Transparency = 1,
+    }, 0.28)
+    animate(self, scale, {
+        Scale = 0.97,
+    }, 0.28)
+    task.delay(0.3, function()
+        if not self.destroyed then
+            self.ticks[l] = nil
+            l.Visible = false
+        end
+    end)
+    call(self, opt(self.config, "OnLoaded", nil), self)
+end
+
+function Tab:AddContent(config)
+    assert(not self.destroyed, "Tab is destroyed")
+    config = config or {}
+    local frame = opt(config, "Instance", nil)
+    assert(
+        typeof(frame) == "Instance" and frame:IsA("GuiObject"),
+        "AddContent requires a GuiObject in Instance"
+    )
+    if opt(config, "Clone", false) then
+        frame = frame:Clone()
+    end
+    local item = {
+        tab = self,
+        window = self.window,
+        connections = {},
+        frame = frame,
+        side = side(opt(config, "Side", "left")),
+        destroyed = false,
+        kind = "custom",
+    }
+    frame.LayoutOrder = opt(config, "Order", #self.elements + 1)
+    frame.Parent = self.columns[item.side]
+    if opt(config, "FitWidth", true) then
+        frame.Size = UDim2.new(1, -2, frame.Size.Y.Scale, frame.Size.Y.Offset)
+    end
+    item.SetSide = elementSide
+    function item:Destroy()
+        if self.destroyed then
+            return
+        end
+        self.destroyed = true
+        self.frame:Destroy()
+        if not self.tab.destroyed then
+            self.tab:_Arrange()
+        end
+    end
+    table.insert(self.elements, item)
+    self:_Arrange()
+    return item
+end
+
+for class, names in pairs({
+    [Window] = {
+        "AddTab",
+        "SelectTab",
+        "SetVisible",
+        "Minimize",
+        "SetStatus",
+        "Destroy",
+        "Unload",
+    },
+    [Tab] = {
+        "AddGroup",
+        "AddPreview",
+        "AddContent",
+        "SetTitle",
+        "SetDescription",
+        "Destroy",
+    },
+    [Group] = {
+        "AddToggle",
+        "AddSlider",
+        "AddButton",
+        "AddLabel",
+        "SetSide",
+        "Destroy",
+    },
+    [Preview] = {
+        "SetTarget",
+        "GetTarget",
+        "IsInsideCircle",
+        "SetRadius",
+        "SetLineVisible",
+        "SetCircleVisible",
+        "SetRole",
+        "SetName",
+        "SetESPEnabled",
+        "SetNamesVisible",
+        "SetHighlightVisible",
+        "SetImage",
+        "SetSide",
+        "Destroy",
+    },
+}) do
+    for _, name in ipairs(names) do
+        class[name:lower()] = class[name]
+    end
+end
+Tab.AddSection = Tab.AddGroup
+Tab.addsection = Tab.AddGroup
+Window.CreateTab = Window.AddTab
+Tab.CreateGroup = Tab.AddGroup
+Tab.CreateTargetPreview = Tab.AddPreview
+Group.CreateToggle = Group.AddToggle
+Group.CreateSlider = Group.AddSlider
+Group.CreateButton = Group.AddButton
+UI.createwindow = UI.CreateWindow
+return UI
+
