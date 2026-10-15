@@ -106,8 +106,13 @@ local iconOffsets = {
 local function addIcon(parent, name, position, size)
     local value = tostring(name)
     local offset = iconOffsets[string.lower(value)]
-    local standaloneImage = value:match("%d+") == "125304603079291" and "rbxassetid://98729914829489" or asset(value)
-    assert(offset or value:match("^%d+$") or value:match("^rbxassetid://%d+$"), "Unknown icon: " .. value)
+    local standaloneImage = value:match("%d+") == "125304603079291"
+            and "rbxassetid://98729914829489"
+        or asset(value)
+    assert(
+        offset or value:match("^%d+$") or value:match("^rbxassetid://%d+$"),
+        "Unknown icon: " .. value
+    )
     return make("ImageLabel", {
         Name = "Icon",
         BackgroundTransparency = 1,
@@ -368,7 +373,8 @@ local function installSettings(ctx)
         Visible = false,
     }, ctx.body)
     local heading = text(page, "Title", "Settings", UDim2.fromOffset(19, 17), 26, true)
-    local headingWidth = game:GetService("TextService"):GetTextSize("Settings", 26, Enum.Font.GothamBold, Vector2.new(10000, 100)).X
+    local headingWidth = game:GetService("TextService")
+        :GetTextSize("Settings", 26, Enum.Font.GothamBold, Vector2.new(10000, 100)).X
     create("ImageLabel", {
         Name = "Icon",
         BackgroundTransparency = 1,
@@ -379,8 +385,7 @@ local function installSettings(ctx)
         Position = UDim2.new(0, headingWidth + 8, 0.5, -11),
         Size = UDim2.fromOffset(22, 22),
     }, heading)
-    local description =
-        text(page, "Description", "Customize daxware", UDim2.fromOffset(19, 46), 14)
+    local description = text(page, "Description", "Customize daxware", UDim2.fromOffset(19, 46), 14)
     description.TextColor3 = Color3.fromRGB(122, 126, 137)
     local scroll = create("ScrollingFrame", {
         Name = "Controls",
@@ -676,6 +681,21 @@ local function installSettings(ctx)
                     end
                 end)
             end
+        end
+    end)
+    ctx.connect(ctx.root:GetAttributeChangedSignal("SettingsRevision"), function()
+        if not ctx.root:GetAttribute("CapturingKey") then
+            keyButton.Text = ctx.key().Name
+        end
+        hex.Text = "#" .. ctx.accent():ToHex():upper()
+        scroll.ScrollBarImageColor3 = ctx.accent()
+        showScale(ctx.scale())
+        for swatch, stroke in pairs(selections) do
+            ctx.tween(
+                stroke,
+                { Transparency = swatch.Name:lower() == ctx.accent():ToHex():lower() and 0 or 1 },
+                0.15
+            )
         end
     end)
     return page
@@ -1012,7 +1032,7 @@ function UI:CreateWindow(config)
             return opt(config, "Scale", 1)
         end,
         setKey = function(key)
-            w.toggleKey = key
+            w:SetToggleKey(key)
         end,
         setAccent = function(color)
             w:SetAccent(color)
@@ -1050,6 +1070,10 @@ function Window:SetAccent(color)
     assert(typeof(color) == "Color3", "Accent must be a Color3")
     captureAccent(self.accentBindings, self.accentSeen, self.root, self.accent)
     self.accent = color
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
     if self.brandAccent then
         animate(self, self.brandAccent, { Value = color }, 0.18)
     end
@@ -1069,9 +1093,15 @@ function Window:SetAccent(color)
                 animate(self, tab.button, { TextColor3 = color }, 0.18)
             end
             for _, element in ipairs(tab.elements) do
-                if not element.destroyed and element.kind == "preview" and element.mode == "aim" then
+                if
+                    not element.destroyed
+                    and element.kind == "preview"
+                    and element.mode == "aim"
+                then
                     local stroke = element.circle:FindFirstChildOfClass("UIStroke")
-                    if stroke then animate(self, stroke, { Color = color }, 0.18) end
+                    if stroke then
+                        animate(self, stroke, { Color = color }, 0.18)
+                    end
                     for _, visual in ipairs({ element.line, element.center, element.dot }) do
                         animate(self, visual, { BackgroundColor3 = color }, 0.18)
                     end
@@ -1094,11 +1124,72 @@ end
 function Window:SetScale(value)
     self.config.Scale = math.clamp(value, 0.65, 1.25)
     self.refit()
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
 end
 
 function Window:SetToggleKey(key)
     assert(typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode, "Expected a KeyCode")
     self.toggleKey = key
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
+end
+
+function Window:GetSettings()
+    return {
+        Accent = self.accent:ToHex(),
+        Scale = opt(self.config, "Scale", 1),
+        ToggleKey = self.toggleKey.Name,
+    }
+end
+
+function Window:ApplySettings(data)
+    if type(data) ~= "table" then
+        return false, "Settings must be a table"
+    end
+    local accent, scale, key
+    if data.Accent ~= nil then
+        if type(data.Accent) ~= "string" or not data.Accent:match("^%x%x%x%x%x%x$") then
+            return false, "Invalid accent color"
+        end
+        accent = Color3.fromHex(data.Accent)
+    end
+    if data.Scale ~= nil then
+        if
+            type(data.Scale) ~= "number"
+            or data.Scale ~= data.Scale
+            or math.abs(data.Scale) == math.huge
+        then
+            return false, "Invalid UI scale"
+        end
+        scale = math.clamp(data.Scale, 0.65, 1.25)
+    end
+    if data.ToggleKey ~= nil then
+        if type(data.ToggleKey) ~= "string" then
+            return false, "Invalid keybind"
+        end
+        local ok, result = pcall(function()
+            return Enum.KeyCode[data.ToggleKey]
+        end)
+        if not ok or not result or result == Enum.KeyCode.Unknown then
+            return false, "Invalid keybind"
+        end
+        key = result
+    end
+    if accent then
+        self:SetAccent(accent)
+    end
+    if scale then
+        self:SetScale(scale)
+    end
+    if key then
+        self:SetToggleKey(key)
+    end
+    return true
 end
 
 function Window:_ClampPosition(position, targetSize)
