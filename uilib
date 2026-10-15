@@ -1062,6 +1062,23 @@ function Window:SetAccent(color)
             animate(self, object, goals, 0.18)
         end
     end
+    for _, tab in ipairs(self.tabs) do
+        if not tab.destroyed then
+            animate(self, tab.underline, { BackgroundColor3 = color }, 0.18)
+            if self.selected == tab then
+                animate(self, tab.button, { TextColor3 = color }, 0.18)
+            end
+            for _, element in ipairs(tab.elements) do
+                if not element.destroyed and element.kind == "preview" and element.mode == "aim" then
+                    local stroke = element.circle:FindFirstChildOfClass("UIStroke")
+                    if stroke then animate(self, stroke, { Color = color }, 0.18) end
+                    for _, visual in ipairs({ element.line, element.center, element.dot }) do
+                        animate(self, visual, { BackgroundColor3 = color }, 0.18)
+                    end
+                end
+            end
+        end
+    end
     for _, knob in ipairs(self.root:GetDescendants()) do
         if knob:GetAttribute("ToggleKnob") then
             animate(self, knob, {
