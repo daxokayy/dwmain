@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local ContentProvider = game:GetService("ContentProvider")
 local UI = {}
 local Window, Tab, Group, Preview = {}, {}, {}, {}
+local settingsState = setmetatable({}, { __mode = "k" })
 Window.__index = Window
 Tab.__index = Tab
 Group.__index = Group
@@ -90,6 +91,36 @@ local function asset(id)
     return id:match("^%d+$") and "rbxassetid://" .. id or id
 end
 
+local iconOffsets = {
+    swords = Vector2.new(4, 4),
+    crosshair = Vector2.new(36, 4),
+    wrench = Vector2.new(68, 4),
+    settings = Vector2.new(100, 4),
+    user = Vector2.new(4, 36),
+    house = Vector2.new(36, 36),
+    eye = Vector2.new(68, 36),
+    minus = Vector2.new(100, 36),
+    x = Vector2.new(4, 68),
+}
+
+local function addIcon(parent, name, position, size)
+    local value = tostring(name)
+    local offset = iconOffsets[string.lower(value)]
+    local standaloneImage = value:match("%d+") == "125304603079291" and "rbxassetid://98729914829489" or asset(value)
+    assert(offset or value:match("^%d+$") or value:match("^rbxassetid://%d+$"), "Unknown icon: " .. value)
+    return make("ImageLabel", {
+        Name = "Icon",
+        BackgroundTransparency = 1,
+        Image = offset and "rbxassetid://134425129651297" or standaloneImage,
+        ImageRectOffset = offset or Vector2.zero,
+        ImageRectSize = offset and Vector2.new(24, 24) or Vector2.zero,
+        ImageColor3 = C.Muted,
+        Size = UDim2.fromOffset(size or 16, size or 16),
+        Position = position,
+        ZIndex = parent.ZIndex,
+    }, parent)
+end
+
 local function side(value)
     value = string.lower(value or "left")
     assert(value == "left" or value == "right", "Side must be left or right")
@@ -109,6 +140,136 @@ local function disconnect(owner)
     table.clear(owner.connections)
 end
 
+local function toggleKnobColor(accent, enabled)
+    local brightness = accent.R * 0.2126 + accent.G * 0.7152 + accent.B * 0.0722
+    if enabled and brightness > 0.72 then
+        return Color3.fromRGB(48, 51, 58)
+    end
+    return Color3.fromRGB(249, 232, 235)
+end
+
+local function styleBrand(title, accent, connect)
+    if not title or title.Text:gsub("<.->", ""):lower() ~= "daxware" then
+        return nil
+    end
+    title.RichText = true
+    local color = title:FindFirstChild("BrandAccent") or Instance.new("Color3Value")
+    color.Name = "BrandAccent"
+    color.Value = accent
+    color.Parent = title
+    local function redraw()
+        title.Text = 'dax<font color="#' .. color.Value:ToHex() .. '">ware</font>'
+    end
+    connect(color.Changed, redraw)
+    redraw()
+    return color
+end
+
+local function animateTopbar(button, icon, name, ctx)
+    if not button or not icon then
+        return
+    end
+    local size = icon.Size
+    local position = icon.Position
+    icon.Position = UDim2.new(
+        position.X.Scale,
+        position.X.Offset + size.X.Offset * (0.5 - icon.AnchorPoint.X),
+        position.Y.Scale,
+        position.Y.Offset + size.Y.Offset * (0.5 - icon.AnchorPoint.Y)
+    )
+    icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    local scale = Instance.new("UIScale")
+    scale.Name = "HoverScale"
+    scale.Parent = icon
+    local hovered = false
+    local token = 0
+    local function paint()
+        ctx.tween(scale, { Scale = hovered and 1.12 or 1 }, 0.16)
+        ctx.tween(icon, {
+            Rotation = hovered and (name == "settings" and 35 or name == "close" and 90 or 0) or 0,
+            ImageColor3 = hovered and ctx.accent() or Color3.fromRGB(171, 173, 182),
+        }, 0.18)
+    end
+    ctx.connect(button.MouseEnter, function()
+        hovered = true
+        paint()
+    end)
+    ctx.connect(button.MouseLeave, function()
+        hovered = false
+        paint()
+    end)
+    ctx.connect(button.InputBegan, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            token += 1
+            local current = token
+            ctx.tween(scale, { Scale = 0.88 }, 0.08)
+            task.delay(0.1, function()
+                if icon.Parent and current == token then
+                    paint()
+                end
+            end)
+        end
+    end)
+end
+
+local function themeProperties(object)
+    local properties = {}
+    if object:IsA("GuiObject") then
+        properties = { "BackgroundColor3" }
+        if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+            table.insert(properties, "TextColor3")
+        end
+        if object:IsA("ImageLabel") or object:IsA("ImageButton") then
+            table.insert(properties, "ImageColor3")
+        end
+        if object:IsA("ScrollingFrame") then
+            table.insert(properties, "ScrollBarImageColor3")
+        end
+    elseif object:IsA("UIStroke") then
+        properties = { "Color" }
+    end
+    return properties
+end
+
+local function fixedColor(object)
+    return object:FindFirstAncestor("Swatches") ~= nil or object:GetAttribute("FixedColor") == true
+end
+
+local function captureAccent(bindings, seen, root, color)
+    for _, object in ipairs(root:GetDescendants()) do
+        if not seen[object] then
+            seen[object] = true
+            if not fixedColor(object) then
+                for _, property in ipairs(themeProperties(object)) do
+                    if object[property] == color then
+                        bindings[object] = bindings[object] or {}
+                        bindings[object][property] = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function trackAccent(bindings, object, property, value, color)
+    if typeof(value) ~= "Color3" or fixedColor(object) then
+        return
+    end
+    local properties = bindings[object]
+    if value == color then
+        if not properties then
+            properties = {}
+            bindings[object] = properties
+        end
+        properties[property] = true
+    elseif properties then
+        properties[property] = nil
+    end
+end
+
 local function animate(w, object, props, duration, style, direction)
     if w.destroyed or not object.Parent then
         return
@@ -119,6 +280,7 @@ local function animate(w, object, props, duration, style, direction)
         w.tweens[object] = channels
     end
     for property, value in pairs(props) do
+        trackAccent(w.accentBindings, object, property, value, w.accent)
         if channels[property] then
             channels[property]:Cancel()
         end
@@ -170,6 +332,355 @@ local function elementSide(self, value)
     end
 end
 
+local function installSettings(ctx)
+    local function create(class, props, parent)
+        local object = Instance.new(class)
+        for key, value in pairs(props) do
+            object[key] = value
+        end
+        object.Parent = parent
+        return object
+    end
+    local function text(parent, name, value, position, size, bold)
+        return create("TextLabel", {
+            Name = name,
+            Text = value,
+            Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+            TextSize = size or 14,
+            TextColor3 = Color3.fromRGB(242, 242, 244),
+            BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = position,
+            Size = UDim2.new(1, -28, 0, 28),
+        }, parent)
+    end
+    local function corner(object)
+        create("UICorner", { CornerRadius = UDim.new(0, 6) }, object)
+    end
+    local existing = ctx.body:FindFirstChild("SettingsPage")
+    if existing then
+        existing:Destroy()
+    end
+    local page = create("Frame", {
+        Name = "SettingsPage",
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+    }, ctx.body)
+    local heading = text(page, "Title", "Settings", UDim2.fromOffset(19, 17), 26, true)
+    local headingWidth = game:GetService("TextService"):GetTextSize("Settings", 26, Enum.Font.GothamBold, Vector2.new(10000, 100)).X
+    create("ImageLabel", {
+        Name = "Icon",
+        BackgroundTransparency = 1,
+        Image = "rbxassetid://134425129651297",
+        ImageRectOffset = Vector2.new(68, 4),
+        ImageRectSize = Vector2.new(24, 24),
+        ImageColor3 = Color3.fromRGB(171, 173, 182),
+        Position = UDim2.new(0, headingWidth + 8, 0.5, -11),
+        Size = UDim2.fromOffset(22, 22),
+    }, heading)
+    local description =
+        text(page, "Description", "Customize daxware", UDim2.fromOffset(19, 46), 14)
+    description.TextColor3 = Color3.fromRGB(122, 126, 137)
+    local scroll = create("ScrollingFrame", {
+        Name = "Controls",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(15, 78),
+        Size = UDim2.new(1, -30, 1, -86),
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = ctx.accent(),
+    }, page)
+    create(
+        "UIListLayout",
+        { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder },
+        scroll
+    )
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 4),
+        PaddingRight = UDim.new(0, 4),
+        PaddingTop = UDim.new(0, 4),
+        PaddingBottom = UDim.new(0, 4),
+    }, scroll)
+    local function card(name, height, order)
+        local frame = create("CanvasGroup", {
+            Name = name,
+            Size = UDim2.new(1, -2, 0, height),
+            BackgroundColor3 = Color3.fromRGB(22, 24, 26),
+            BorderSizePixel = 0,
+            LayoutOrder = order,
+        }, scroll)
+        corner(frame)
+        local outline = create("Frame", {
+            Name = "InsetBorder",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(1, 1),
+            Size = UDim2.new(1, -2, 1, -2),
+        }, frame)
+        corner(outline)
+        create("UIStroke", {
+            Color = Color3.fromRGB(48, 51, 55),
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        }, outline)
+        return frame
+    end
+    local function button(parent, name, value, pos, size)
+        local b = create("TextButton", {
+            Name = name,
+            Text = value,
+            Font = Enum.Font.Gotham,
+            TextSize = 13,
+            TextColor3 = Color3.fromRGB(242, 242, 244),
+            BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Position = pos,
+            Size = size,
+        }, parent)
+        corner(b)
+        ctx.connect(b.MouseEnter, function()
+            ctx.tween(b, { BackgroundColor3 = Color3.fromRGB(49, 51, 57) }, 0.13)
+        end)
+        ctx.connect(b.MouseLeave, function()
+            ctx.tween(b, { BackgroundColor3 = Color3.fromRGB(37, 39, 43) }, 0.13)
+        end)
+        return b
+    end
+    local keyCard = card("Keybind", 58, 1)
+    text(keyCard, "Label", "Toggle keybind", UDim2.fromOffset(14, 15), 14)
+    local keyButton = button(
+        keyCard,
+        "Capture",
+        ctx.key().Name,
+        UDim2.new(1, -164, 0, 12),
+        UDim2.fromOffset(150, 34)
+    )
+    ctx.connect(keyButton.Activated, function()
+        if ctx.root:GetAttribute("CapturingKey") then
+            ctx.root:SetAttribute("CapturingKey", false)
+            keyButton.Text = ctx.key().Name
+            return
+        end
+        ctx.root:SetAttribute("CapturingKey", true)
+        keyButton.Text = "Press a key..."
+    end)
+    ctx.connect(game:GetService("UserInputService").InputBegan, function(input)
+        if
+            not ctx.root:GetAttribute("CapturingKey")
+            or input.UserInputType ~= Enum.UserInputType.Keyboard
+        then
+            return
+        end
+        if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+            ctx.setKey(input.KeyCode)
+        end
+        keyButton.Text = ctx.key().Name
+        task.defer(function()
+            if ctx.root.Parent then
+                ctx.root:SetAttribute("CapturingKey", false)
+            end
+        end)
+    end)
+    local colorCard = card("AccentColor", 94, 2)
+    text(colorCard, "Label", "Accent color", UDim2.fromOffset(14, 8), 14)
+    local hex = create("TextBox", {
+        Name = "Hex",
+        Text = "#" .. ctx.accent():ToHex():upper(),
+        PlaceholderText = "#F77D95",
+        ClearTextOnFocus = false,
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextColor3 = Color3.fromRGB(242, 242, 244),
+        BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -124, 0, 10),
+        Size = UDim2.fromOffset(110, 30),
+    }, colorCard)
+    corner(hex)
+    local swatches = create("Frame", {
+        Name = "Swatches",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(14, 51),
+        Size = UDim2.new(1, -28, 0, 28),
+    }, colorCard)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, swatches)
+    local selections = {}
+    local function applyColor(color)
+        for swatch, stroke in pairs(selections) do
+            ctx.tween(
+                stroke,
+                { Transparency = swatch.Name:lower() == color:ToHex():lower() and 0 or 1 },
+                0.15
+            )
+        end
+        ctx.setAccent(color)
+        hex.Text = "#" .. color:ToHex():upper()
+        scroll.ScrollBarImageColor3 = color
+    end
+    for index, value in ipairs({ "F77D95", "509BFF", "A78BFA", "59D7AC", "FFBA65", "E8E8ED" }) do
+        local color = Color3.fromHex(value)
+        local swatch = create("TextButton", {
+            Name = value,
+            Text = "",
+            BackgroundColor3 = color,
+            BorderSizePixel = 0,
+            Size = UDim2.fromOffset(28, 28),
+            LayoutOrder = index,
+            AutoButtonColor = false,
+        }, swatches)
+        corner(swatch)
+        local stroke = create("UIStroke", {
+            Color = Color3.fromRGB(242, 242, 244),
+            Thickness = 2,
+            Transparency = color == ctx.accent() and 0 or 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        }, swatch)
+        selections[swatch] = stroke
+        local hoverScale = create("UIScale", { Scale = 1 }, swatch)
+        ctx.connect(swatch.MouseEnter, function()
+            ctx.tween(hoverScale, { Scale = 1.12 }, 0.14)
+        end)
+        ctx.connect(swatch.MouseLeave, function()
+            ctx.tween(hoverScale, { Scale = 1 }, 0.14)
+        end)
+        ctx.connect(swatch.Activated, function()
+            applyColor(color)
+        end)
+    end
+    local hexStroke = create("UIStroke", {
+        Color = Color3.fromRGB(171, 173, 182),
+        Transparency = 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, hex)
+    ctx.connect(hex.Focused, function()
+        ctx.tween(hexStroke, { Transparency = 0.2 }, 0.16)
+    end)
+    ctx.connect(hex.FocusLost, function()
+        ctx.tween(hexStroke, { Transparency = 1 }, 0.16)
+        local value = hex.Text:gsub("#", "")
+        if value:match("^%x%x%x%x%x%x$") then
+            applyColor(Color3.fromHex(value))
+        else
+            hex.Text = "#" .. ctx.accent():ToHex():upper()
+        end
+    end)
+    local scaleCard = card("UIScale", 90, 3)
+    text(scaleCard, "Label", "UI scale", UDim2.fromOffset(14, 8), 14)
+    local percent = text(scaleCard, "Value", "100%", UDim2.new(1, -84, 0, 8), 14)
+    percent.Size = UDim2.fromOffset(70, 28)
+    percent.TextXAlignment = Enum.TextXAlignment.Right
+    local track = create("Frame", {
+        Name = "Track",
+        BackgroundColor3 = Color3.fromRGB(64, 66, 73),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 58),
+        Size = UDim2.new(1, -40, 0, 4),
+    }, scaleCard)
+    corner(track)
+    local fill = create("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = ctx.accent(),
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0.5, 1),
+    }, track)
+    corner(fill)
+    local knob = create("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = ctx.accent(),
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(12, 12),
+        Position = UDim2.fromScale(0.5, 0.5),
+    }, track)
+    corner(knob)
+    local hit = create("TextButton", {
+        Name = "Hit",
+        Text = "",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(-8, -12),
+        Size = UDim2.new(1, 16, 0, 28),
+    }, track)
+    local function showScale(value)
+        local ratio = (value - 0.65) / 0.6
+        percent.Text = string.format("%d%%", math.round(value * 100))
+        ctx.tween(fill, { Size = UDim2.fromScale(ratio, 1) }, 0.1)
+        ctx.tween(knob, { Position = UDim2.fromScale(ratio, 0.5) }, 0.1)
+    end
+    ctx.connect(hit.MouseEnter, function()
+        ctx.tween(knob, { Size = UDim2.fromOffset(16, 16) }, 0.14)
+    end)
+    ctx.connect(hit.MouseLeave, function()
+        ctx.tween(knob, { Size = UDim2.fromOffset(12, 12) }, 0.14)
+    end)
+    showScale(ctx.scale())
+    local dragging
+    local function updateScale(input)
+        local ratio = math.clamp(
+            (input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1),
+            0,
+            1
+        )
+        local value = math.round((0.65 + ratio * 0.6) * 100) / 100
+        ctx.setScale(value)
+        showScale(value)
+    end
+    ctx.connect(hit.InputBegan, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            dragging = input
+            updateScale(input)
+        end
+    end)
+    ctx.connect(game:GetService("UserInputService").InputChanged, function(input)
+        if
+            dragging
+            and (
+                input == dragging
+                or input.UserInputType == Enum.UserInputType.MouseMovement
+                    and dragging.UserInputType == Enum.UserInputType.MouseButton1
+            )
+        then
+            updateScale(input)
+        end
+    end)
+    ctx.connect(game:GetService("UserInputService").InputEnded, function(input)
+        if input == dragging then
+            dragging = nil
+        end
+    end)
+    ctx.connect(game:GetService("UserInputService").WindowFocusReleased, function()
+        dragging = nil
+    end)
+    local entranceToken = 0
+    ctx.connect(page:GetPropertyChangedSignal("Visible"), function()
+        entranceToken += 1
+        local token = entranceToken
+        if not page.Visible then
+            return
+        end
+        for _, card in ipairs(scroll:GetChildren()) do
+            if card:IsA("CanvasGroup") then
+                card.GroupTransparency = 1
+                task.delay((card.LayoutOrder - 1) * 0.045, function()
+                    if card.Parent and page.Visible and token == entranceToken then
+                        ctx.tween(card, { GroupTransparency = 0 }, 0.22)
+                    end
+                end)
+            end
+        end
+    end)
+    return page
+end
+
 function UI:CreateWindow(config)
     config = config or {}
     local size = opt(config, "Size", Vector2.new(700, 499))
@@ -179,6 +690,8 @@ function UI:CreateWindow(config)
     )
     local w = setmetatable({
         connections = {},
+        accentBindings = setmetatable({}, { __mode = "k" }),
+        accentSeen = setmetatable({}, { __mode = "k" }),
         tweens = setmetatable({}, {
             __mode = "k",
         }),
@@ -195,13 +708,14 @@ function UI:CreateWindow(config)
         toggleKey = opt(config, "ToggleKey", Enum.KeyCode.RightControl),
         config = config,
     }, Window)
+    settingsState[w] = {}
     w.gui = make("ScreenGui", {
         Name = opt(config, "Name", "daxwareUI"),
         ResetOnSpawn = false,
         DisplayOrder = opt(config, "DisplayOrder", 100),
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
         IgnoreGuiInset = opt(config, "IgnoreGuiInset", true),
-    }, opt(config, "Parent", Players.LocalPlayer:WaitForChild("PlayerGui")))
+    }, opt(config, "Parent", nil) or Players.LocalPlayer:WaitForChild("PlayerGui"))
     w.root = make("CanvasGroup", {
         Name = "Window",
         BackgroundColor3 = C.Background,
@@ -244,32 +758,18 @@ function UI:CreateWindow(config)
     }, w.header)
     local mini = hit(w.header, "Minimize", UDim2.new(1, -78, 0, 15), UDim2.fromOffset(23, 26))
     local close = hit(w.header, "Close", UDim2.new(1, -37, 0, 15), UDim2.fromOffset(23, 26))
-    make("Frame", {
-        BackgroundColor3 = C.Muted,
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(6, 12),
-        Size = UDim2.fromOffset(12, 1),
-    }, mini)
-    for _, angle in
-        {
-            45,
-            -45,
-        }
-    do
-        make("Frame", {
-            BackgroundColor3 = C.Muted,
-            BorderSizePixel = 0,
-            Position = UDim2.fromOffset(4, 12),
-            Size = UDim2.fromOffset(16, 1),
-            Rotation = angle,
-        }, close)
-    end
+    settingsState[w].button =
+        hit(w.header, "Settings", UDim2.new(1, -126, 0, 11), UDim2.fromOffset(28, 32))
+    settingsState[w].icon =
+        addIcon(settingsState[w].button, "settings", UDim2.new(0.5, -11, 0.5, -11), 22)
+    addIcon(mini, "minus", UDim2.new(0.5, -11, 0.5, -11), 22)
+    addIcon(close, "x", UDim2.new(0.5, -11, 0.5, -11), 22)
     w.nav = make("ScrollingFrame", {
         Name = "Tabs",
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        Position = UDim2.fromOffset(18, 54),
-        Size = UDim2.fromOffset(size.X - 36, 38),
+        Position = UDim2.fromOffset(19, 54),
+        Size = UDim2.fromOffset(size.X - 38, 38),
         ScrollBarThickness = 0,
         ScrollingDirection = Enum.ScrollingDirection.X,
         CanvasSize = UDim2.new(),
@@ -346,6 +846,7 @@ function UI:CreateWindow(config)
             w.positionGoal = w:_ClampPosition(w.positionGoal)
         end
     end
+    w.refit = fit
     listen(w, w.gui:GetPropertyChangedSignal("AbsoluteSize"), fit)
     fit()
     local center = w.root.Position
@@ -363,7 +864,7 @@ function UI:CreateWindow(config)
             w.ready
             and w.visible
             and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
-            and input.Position.X < mini.AbsolutePosition.X
+            and input.Position.X < settingsState[w].button.AbsolutePosition.X
         then
             drag = input
             start = input.Position
@@ -411,6 +912,7 @@ function UI:CreateWindow(config)
             w.ready
             and not processed
             and not UIS:GetFocusedTextBox()
+            and not w.root:GetAttribute("CapturingKey")
             and input.KeyCode == w.toggleKey
         then
             w:SetVisible(not w.visible)
@@ -474,7 +976,112 @@ function UI:CreateWindow(config)
             w:SetVisible(true)
         end
     end)
+    w.brandAccent = styleBrand(w.header.Title, w.accent, function(signal, fn)
+        return listen(w, signal, fn)
+    end)
+    local topbarContext = {
+        connect = function(signal, fn)
+            return listen(w, signal, fn)
+        end,
+        tween = function(object, props, duration)
+            animate(w, object, props, duration)
+        end,
+        accent = function()
+            return w.accent
+        end,
+    }
+    animateTopbar(settingsState[w].button, settingsState[w].icon, "settings", topbarContext)
+    animateTopbar(mini, mini:FindFirstChild("Icon"), "minimize", topbarContext)
+    animateTopbar(close, close:FindFirstChild("Icon"), "close", topbarContext)
+    settingsState[w].page = installSettings({
+        root = w.root,
+        body = w.body,
+        connect = function(signal, callback)
+            return listen(w, signal, callback)
+        end,
+        tween = function(object, props, duration)
+            animate(w, object, props, duration)
+        end,
+        accent = function()
+            return w.accent
+        end,
+        key = function()
+            return w.toggleKey
+        end,
+        scale = function()
+            return opt(config, "Scale", 1)
+        end,
+        setKey = function(key)
+            w.toggleKey = key
+        end,
+        setAccent = function(color)
+            w:SetAccent(color)
+        end,
+        setScale = function(value)
+            w:SetScale(value)
+        end,
+    })
+    listen(w, settingsState[w].button.Activated, function()
+        if w.minimized or not w.ready then
+            return
+        end
+        if settingsState[w].page.Visible then
+            settingsState[w].page.Visible = false
+            if settingsState[w].previous and not settingsState[w].previous.destroyed then
+                w:SelectTab(settingsState[w].previous)
+            end
+        else
+            settingsState[w].previous = w.selected
+            w.selected = nil
+            for _, tab in ipairs(w.tabs) do
+                tab.page.Visible = false
+                tab.underline.Visible = false
+                animate(w, tab.button, { TextColor3 = C.Muted }, 0.17)
+            end
+            settingsState[w].page.Visible = true
+            settingsState[w].page.Position = UDim2.fromOffset(8, 0)
+            animate(w, settingsState[w].page, { Position = UDim2.new() }, 0.2)
+        end
+    end)
     return w
+end
+
+function Window:SetAccent(color)
+    assert(typeof(color) == "Color3", "Accent must be a Color3")
+    captureAccent(self.accentBindings, self.accentSeen, self.root, self.accent)
+    self.accent = color
+    if self.brandAccent then
+        animate(self, self.brandAccent, { Value = color }, 0.18)
+    end
+    for object, properties in pairs(self.accentBindings) do
+        if object.Parent and not fixedColor(object) then
+            local goals = {}
+            for property in pairs(properties) do
+                goals[property] = color
+            end
+            animate(self, object, goals, 0.18)
+        end
+    end
+    for _, knob in ipairs(self.root:GetDescendants()) do
+        if knob:GetAttribute("ToggleKnob") then
+            animate(self, knob, {
+                BackgroundColor3 = toggleKnobColor(
+                    color,
+                    knob.Parent.Parent:GetAttribute("Value") == true
+                ),
+            }, 0.18)
+        end
+    end
+end
+
+function Window:SetScale(value)
+    self.config.Scale = math.clamp(value, 0.65, 1.25)
+    self.refit()
+end
+
+function Window:SetToggleKey(key)
+    assert(typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode, "Expected a KeyCode")
+    self.toggleKey = key
 end
 
 function Window:_ClampPosition(position, targetSize)
@@ -518,6 +1125,8 @@ function Window:Minimize(value)
         return
     end
     self.minimized = value == true
+    settingsState[self].button.Active = not self.minimized
+    animate(self, settingsState[self].icon, { ImageTransparency = self.minimized and 1 or 0 }, 0.22)
     self.minToken = (self.minToken or 0) + 1
     local token = self.minToken
     self.positionGoal =
@@ -573,6 +1182,10 @@ function Window:AddTab(config)
         }
     end
     config = config or {}
+    assert(
+        string.lower(tostring(opt(config, "Name", ""))) ~= "settings",
+        "Settings is a built-in page managed by the library"
+    )
     local index = #self.tabs + 1
     local tab = setmetatable({
         window = self,
@@ -628,6 +1241,21 @@ function Window:AddTab(config)
         UDim2.new(1, -38, 0, 19),
         C.Subtle
     )
+    local iconName = opt(config, "Icon", nil)
+    if iconName then
+        tab.icon = addIcon(tab.page.Title, iconName, UDim2.new(), 22)
+        tab.icon.ImageColor3 = C.Muted
+        local function alignIcon()
+            local title = tab.page.Title
+            local width =
+                game:GetService("TextService")
+                    :GetTextSize(title.Text, title.TextSize, title.Font, Vector2.new(10000, 100)).X
+            tab.icon.Position = UDim2.new(0, width + 8, 0.5, -11)
+        end
+        listen(tab, tab.page.Title:GetPropertyChangedSignal("Text"), alignIcon)
+        listen(tab, tab.page.Title:GetPropertyChangedSignal("TextSize"), alignIcon)
+        alignIcon()
+    end
     tab.columns = {}
     for _, which in
         {
@@ -639,8 +1267,8 @@ function Window:AddTab(config)
             Name = which == "left" and "LeftContent" or "RightContent",
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            Position = which == "left" and UDim2.fromOffset(18, 76) or UDim2.new(0.5, 4, 0, 76),
-            Size = which == "left" and UDim2.new(0.5, -28, 1, -87) or UDim2.new(0.5, -20, 1, -87),
+            Position = which == "left" and UDim2.fromOffset(19, 76) or UDim2.new(0.5, 5, 0, 76),
+            Size = which == "left" and UDim2.new(0.5, -30, 1, -87) or UDim2.new(0.5, -22, 1, -87),
             CanvasSize = UDim2.new(),
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             ScrollBarThickness = 2,
@@ -696,6 +1324,10 @@ function Window:SelectTab(tab, initial)
     assert(type(tab) == "table" and tab.window == self and not tab.destroyed, "Invalid tab")
     if self.selected == tab then
         return
+    end
+    if settingsState[self].page then
+        settingsState[self].page.Visible = false
+        self.root:SetAttribute("CapturingKey", false)
     end
     local previous = self.selected
     self.selected = tab
@@ -911,9 +1543,11 @@ function Group:AddToggle(config)
         BackgroundColor3 = Color3.fromRGB(249, 232, 235),
         BorderSizePixel = 0,
         Position = UDim2.fromOffset(3, 3),
-        Size = UDim2.fromOffset(13, 13),
+        Size = UDim2.fromOffset(13, 14),
     }, track)
     round(knob, 13)
+    knob:SetAttribute("ToggleKnob", true)
+    knob:SetAttribute("FixedColor", true)
     c.value = opt(config, "Value", false) == true
     local function paint(smooth)
         if smooth then
@@ -922,10 +1556,12 @@ function Group:AddToggle(config)
             })
             animate(w, knob, {
                 Position = UDim2.fromOffset(c.value and 17 or 3, 3),
+                BackgroundColor3 = toggleKnobColor(w.accent, c.value),
             })
         else
             track.BackgroundColor3 = c.value and w.accent or C.Track
             knob.Position = UDim2.fromOffset(c.value and 17 or 3, 3)
+            knob.BackgroundColor3 = toggleKnobColor(w.accent, c.value)
         end
     end
     function c:Get()
@@ -1105,6 +1741,24 @@ function Group:AddButton(config)
         UDim2.fromOffset(13, 0),
         UDim2.new(1, -26, 1, 0)
     )
+    local iconName = opt(config, "Icon", nil)
+    if iconName then
+        local iconSize = math.clamp(opt(config, "IconSize", 20), 12, 28)
+        c.icon = addIcon(c.hit, iconName, UDim2.new(0, 9, 0.5, -iconSize / 2), iconSize)
+        c.label.Position = UDim2.fromOffset(17 + iconSize, 0)
+        c.label.Size = UDim2.new(1, -30 - iconSize, 1, 0)
+        c.icon:SetAttribute("FixedColor", true)
+        c.icon.AnchorPoint = Vector2.new(0.5, 0.5)
+        c.icon.Position = UDim2.new(0, 9 + iconSize / 2, 0.5, 0)
+        c.iconScale = make("UIScale", { Scale = 1 }, c.icon)
+        local function matchText()
+            c.icon.ImageColor3 = c.label.TextColor3
+            c.icon.ImageTransparency = c.label.TextTransparency
+        end
+        matchText()
+        listen(c, c.label:GetPropertyChangedSignal("TextColor3"), matchText)
+        listen(c, c.label:GetPropertyChangedSignal("TextTransparency"), matchText)
+    end
     local hovered = false
     c.busy = false
     local function paint(pressed)
@@ -1132,6 +1786,18 @@ function Group:AddButton(config)
         end
     end)
     listen(c, c.hit.Activated, function()
+        if c.enabled and c.icon then
+            c.iconToken = (c.iconToken or 0) + 1
+            local token = c.iconToken
+            animate(w, c.iconScale, { Scale = 0.78 }, 0.08)
+            animate(w, c.icon, { Rotation = -14 }, 0.08)
+            task.delay(0.08, function()
+                if not c.destroyed and c.icon.Parent and token == c.iconToken then
+                    animate(w, c.iconScale, { Scale = 1 }, 0.25, Enum.EasingStyle.Back)
+                    animate(w, c.icon, { Rotation = 0 }, 0.25, Enum.EasingStyle.Back)
+                end
+            end)
+        end
         if not c.enabled or c.busy then
             return
         end
