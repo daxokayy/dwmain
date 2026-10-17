@@ -1,0 +1,2378 @@
+local function createDaxwareTransport(baseUrl)
+    local http = game:GetService("HttpService")
+    local sendRequest = request or http_request or (syn and syn.request)
+    return function(method, path, data, token)
+        if type(sendRequest) ~= "function" then
+            return false, { error = "This executor does not provide request()" }, 0
+        end
+        local headers = { ["Content-Type"] = "application/json" }
+        if token then
+            headers.Authorization = "Bearer " .. token
+        end
+        local options = { Url = baseUrl .. path, Method = method, Headers = headers }
+        if data then
+            options.Body = http:JSONEncode(data)
+        end
+        local ok, response = pcall(sendRequest, options)
+        if not ok or type(response) ~= "table" then
+            return false, { error = "Could not reach daxware backend" }, 0
+        end
+        local status = tonumber(response.StatusCode) or 0
+        local decoded, value = pcall(http.JSONDecode, http, response.Body or "")
+        if not decoded or type(value) ~= "table" then
+            return false, { error = "Backend returned an invalid response" }, status
+        end
+        return status >= 200 and status < 300, value, status
+    end
+end
+
+local function buildDeveloperPanel()
+    local StarterGui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    for _, existing in ipairs(StarterGui:GetChildren()) do
+        if existing.Name == "DaxwareDeveloperPanel" and existing:IsA("ScreenGui") then
+            existing:Destroy()
+        end
+    end
+
+    local C = {
+        background = Color3.fromRGB(18, 20, 22),
+        card = Color3.fromRGB(22, 24, 26),
+        border = Color3.fromRGB(51, 54, 58),
+        text = Color3.fromRGB(235, 236, 240),
+        muted = Color3.fromRGB(148, 152, 162),
+        accent = Color3.fromRGB(247, 125, 149),
+        green = Color3.fromRGB(82, 207, 128),
+    }
+
+    local function make(class, name, props, parent)
+        local object = Instance.new(class)
+        object.Name = name
+        for key, value in pairs(props or {}) do
+            object[key] = value
+        end
+        object.Parent = parent
+        return object
+    end
+
+    local function corner(object, radius)
+        make("UICorner", "Corner", { CornerRadius = UDim.new(0, radius or 7) }, object)
+    end
+
+    local function border(object)
+        make(
+            "UIStroke",
+            "Border",
+            { Color = C.border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border },
+            object
+        )
+    end
+
+    local function frame(parent, name, x, y, w, h, color)
+        return make("Frame", name, {
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(w, h),
+            BackgroundColor3 = color or C.card,
+            BorderSizePixel = 0,
+        }, parent)
+    end
+
+    local function label(parent, name, text, x, y, w, h, size, color, bold)
+        return make("TextLabel", name, {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(w, h),
+            Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+            Text = text,
+            TextSize = size or 14,
+            TextColor3 = color or C.text,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BorderSizePixel = 0,
+        }, parent)
+    end
+
+    local function line(parent, name, x, y, w)
+        return frame(parent, name, x, y, w, 1, C.border)
+    end
+
+    local function icon(parent, name, offset, x, y, size)
+        return make("ImageLabel", name, {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(size or 18, size or 18),
+            Image = "rbxassetid://134425129651297",
+            ImageRectOffset = offset,
+            ImageRectSize = Vector2.new(24, 24),
+            ImageColor3 = C.muted,
+        }, parent)
+    end
+
+    local function button(parent, name, text, x, y, w, h, primary)
+        local object = make("TextButton", name, {
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(w, h),
+            BackgroundColor3 = primary and C.accent or C.card,
+            Text = text,
+            TextSize = 13,
+            Font = Enum.Font.GothamMedium,
+            TextColor3 = primary and C.background or C.text,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+        }, parent)
+        corner(object, 5)
+        if not primary then
+            border(object)
+        end
+        return object
+    end
+
+    local gui = make("ScreenGui", "DaxwareDeveloperPanel", {
+        ResetOnSpawn = false,
+        DisplayOrder = 10000,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        IgnoreGuiInset = false,
+    }, StarterGui)
+
+    local root = make("CanvasGroup", "Window", {
+        Size = UDim2.fromOffset(960, 730),
+        BackgroundColor3 = C.background,
+        BorderSizePixel = 0,
+        GroupTransparency = 0,
+    }, gui)
+    root.AnchorPoint = Vector2.new(0.5, 0.5)
+    root.Position = UDim2.fromScale(0.5, 0.5)
+    root.ClipsDescendants = true
+    corner(root, 8)
+    border(root)
+    make("UIScale", "Scale", {}, root)
+
+    local header = frame(root, "Header", 0, 0, 960, 66, C.background)
+    local brand = label(
+        header,
+        "Brand",
+        'dax<font color="#F77D95">ware</font>',
+        26,
+        12,
+        180,
+        40,
+        29,
+        nil,
+        true
+    )
+    brand.RichText = true
+    local drag = button(header, "Drag", "", 0, 0, 810, 66)
+    drag.BackgroundTransparency = 1
+    drag.Border:Destroy()
+    for _, entry in ipairs({
+        { "Settings", Vector2.new(100, 4), 824 },
+        { "Minimize", Vector2.new(100, 36), 868 },
+        { "Close", Vector2.new(4, 68), 912 },
+    }) do
+        local control = button(header, entry[1], "", entry[3], 18, 30, 30)
+        control.BackgroundTransparency = 1
+        control.Border:Destroy()
+        icon(control, "Icon", entry[2], 5, 5, 20)
+    end
+    line(root, "HeaderLine", 0, 66, 960)
+
+    local nav = frame(root, "Navigation", 0, 67, 960, 44, C.background)
+    for index, name in ipairs({ "Sessions", "Activity", "Settings" }) do
+        local tab = button(nav, name, name, 24 + (index - 1) * 112, 0, 104, 44)
+        tab.BackgroundTransparency = 1
+        tab.TextColor3 = index == 1 and C.text or C.muted
+        tab.Border:Destroy()
+    end
+    frame(nav, "Indicator", 24, 42, 104, 2, C.accent)
+    line(root, "NavigationLine", 0, 111, 960)
+
+    local content = frame(root, "Content", 0, 112, 960, 570, C.background)
+    local sessions = frame(content, "Sessions", 0, 0, 960, 570, C.background)
+    label(sessions, "Title", "Developer Panel", 26, 17, 470, 34, 27, nil, true)
+    label(sessions, "Subtitle", "Manage connected daxware sessions", 27, 56, 500, 22, 14, C.muted)
+    for index, entry in ipairs({
+        { "4", "sample sessions" },
+        { "2", "interactions on" },
+        { "v1.2", "preview" },
+    }) do
+        local x = 600 + (index - 1) * 116
+        local value = label(sessions, "Metric" .. index, entry[1], x, 21, 110, 25, 21, nil, true)
+        value.TextXAlignment = Enum.TextXAlignment.Center
+        local caption =
+            label(sessions, "MetricLabel" .. index, entry[2], x, 49, 110, 23, 11, C.muted)
+        caption.TextXAlignment = Enum.TextXAlignment.Center
+        if index < 3 then
+            frame(sessions, "MetricDivider" .. index, x + 113, 24, 1, 45, C.border)
+        end
+    end
+
+    local searchCard = frame(sessions, "SearchCard", 26, 98, 530, 52)
+    corner(searchCard)
+    border(searchCard)
+    local searchRing = frame(searchCard, "SearchRing", 16, 16, 14, 14)
+    searchRing.BackgroundTransparency = 1
+    corner(searchRing, 20)
+    border(searchRing)
+    searchRing.Border.Color = C.muted
+    local searchHandle = frame(searchCard, "SearchHandle", 28, 30, 8, 2, C.muted)
+    searchHandle.Rotation = 45
+    make("TextBox", "Search", {
+        Position = UDim2.fromOffset(45, 0),
+        Size = UDim2.new(1, -60, 1, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 14,
+        TextColor3 = C.text,
+        PlaceholderColor3 = C.muted,
+        PlaceholderText = "Search players...",
+        Text = "",
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, searchCard)
+    local list = make("ScrollingFrame", "SessionList", {
+        Position = UDim2.fromOffset(26, 160),
+        Size = UDim2.fromOffset(530, 396),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = C.border,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(),
+    }, sessions)
+    make("UIPadding", "Padding", {
+        PaddingTop = UDim.new(0, 1),
+        PaddingLeft = UDim.new(0, 1),
+        PaddingRight = UDim.new(0, 5),
+        PaddingBottom = UDim.new(0, 2),
+    }, list)
+    make(
+        "UIListLayout",
+        "Layout",
+        { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder },
+        list
+    )
+    for index, entry in ipairs({
+        { "PixelPilot", true, "ESP  ·  Auto Farm", 1, "18m 42s" },
+        { "NovaBrick", false, "ESP", 156, "6m 12s" },
+        { "CloudRunner", false, "ESP  ·  Auto Farm", 261, "12m 08s" },
+        { "LunarBuild", true, "Auto Farm", 481, "3m 24s" },
+    }) do
+        local row = button(list, entry[1], "", 0, 0, 524, 86)
+        row.Size = UDim2.new(1, 0, 0, 86)
+        row.LayoutOrder = index
+        row:SetAttribute("Interactions", entry[2])
+        row:SetAttribute("Duration", entry[5])
+        row:SetAttribute("AvatarId", entry[4])
+        local selection = frame(row, "Selection", 0, 4, 3, 78, C.accent)
+        selection.Visible = index == 1
+        corner(selection, 2)
+        local avatar = make("ImageLabel", "Avatar", {
+            Position = UDim2.fromOffset(16, 14),
+            Size = UDim2.fromOffset(58, 58),
+            BackgroundColor3 = Color3.fromRGB(37, 40, 44),
+            BorderSizePixel = 0,
+            Image = "rbxthumb://type=AvatarHeadShot&id=" .. entry[4] .. "&w=150&h=150",
+        }, row)
+        corner(avatar, 5)
+        label(row, "Username", entry[1], 90, 14, 265, 23, 17, nil, true)
+        label(row, "Game", "Murder Mystery 2", 90, 40, 250, 18, 12, C.muted)
+        label(row, "Features", entry[3], 90, 62, 300, 15, 10, C.muted)
+        local dot = frame(row, "OnlineDot", 449, 35, 8, 8, C.green)
+        corner(dot, 8)
+        label(row, "Status", "Online", 466, 27, 52, 24, 11, C.muted)
+    end
+
+    local detail = frame(sessions, "Detail", 572, 98, 362, 458)
+    corner(detail)
+    border(detail)
+    local portrait = make("ImageLabel", "Avatar", {
+        Position = UDim2.fromOffset(18, 18),
+        Size = UDim2.fromOffset(72, 72),
+        BackgroundColor3 = Color3.fromRGB(37, 40, 44),
+        BorderSizePixel = 0,
+        Image = "rbxthumb://type=AvatarHeadShot&id=1&w=150&h=150",
+    }, detail)
+    corner(portrait, 5)
+    label(detail, "Username", "PixelPilot", 106, 18, 240, 26, 21, nil, true)
+    label(detail, "Handle", "@PixelPilot", 106, 47, 240, 22, 12, C.muted)
+    label(detail, "Consent", "● Interactions allowed", 106, 72, 240, 20, 11, C.green)
+    line(detail, "Divider1", 18, 107, 326)
+    for index, entry in ipairs({
+        { "Game", "Murder Mystery 2" },
+        { "Session", "18m 42s" },
+        { "Version", "v1.2" },
+    }) do
+        label(detail, "Key" .. index, entry[1], 18, 117 + (index - 1) * 24, 80, 20, 12, C.muted)
+        label(detail, "Value" .. index, entry[2], 112, 117 + (index - 1) * 24, 230, 20, 12)
+    end
+    line(detail, "Divider2", 18, 196, 326)
+    label(detail, "ControlsTitle", "Session controls", 18, 206, 300, 22, 14, nil, true)
+    for index, name in ipairs({ "Join server", "Send message", "Disable feature", "Unload daxware" }) do
+        local control =
+            button(detail, "Action" .. index, name, 18, 236 + (index - 1) * 35, 326, 28, index == 1)
+        control:SetAttribute("Action", name)
+    end
+    line(detail, "Divider3", 18, 380, 326)
+    label(detail, "EffectsTitle", "Playful effects", 18, 389, 300, 21, 13, nil, true)
+    button(detail, "Confetti", "Confetti", 18, 416, 158, 28):SetAttribute("Action", "Confetti")
+    button(detail, "Shake", "UI shake", 186, 416, 158, 28):SetAttribute("Action", "UI shake")
+
+    local activity = frame(content, "Activity", 26, 20, 908, 534, C.background)
+    activity.Visible = false
+    label(activity, "Title", "Activity", 0, 0, 700, 36, 27, nil, true)
+    label(
+        activity,
+        "Subtitle",
+        "Preview actions appear here. No remote commands are sent.",
+        0,
+        42,
+        900,
+        25,
+        14,
+        C.muted
+    )
+    local log =
+        label(activity, "Log", "Developer panel preview ready.", 0, 92, 900, 420, 14, C.muted)
+    log.TextYAlignment = Enum.TextYAlignment.Top
+    log.TextWrapped = true
+
+    local settingsPage = frame(content, "Settings", 26, 20, 908, 534, C.background)
+    settingsPage.Visible = false
+    label(settingsPage, "Title", "Panel settings", 0, 0, 700, 36, 27, nil, true)
+    label(settingsPage, "Subtitle", "Local design preview", 0, 42, 700, 25, 14, C.muted)
+    local notice = frame(settingsPage, "Notice", 0, 94, 908, 110)
+    corner(notice)
+    border(notice)
+    local noticeLabel = label(
+        notice,
+        "Text",
+        "This panel uses fictional session data.\nPresence sharing and developer interactions will be opt-in.\nBackend connection: not configured.",
+        20,
+        15,
+        868,
+        80,
+        14,
+        C.muted
+    )
+    noticeLabel.TextWrapped = true
+    noticeLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+    line(root, "FooterLine", 0, 682, 960)
+    local footer = frame(root, "Footer", 0, 683, 960, 47, C.background)
+    local statusDot = frame(footer, "Dot", 26, 20, 8, 8, C.accent)
+    corner(statusDot, 8)
+    label(footer, "Status", "Development panel", 43, 11, 835, 26, 12, C.muted)
+    local version = label(footer, "Version", "v0.1", 876, 11, 58, 26, 11, C.muted)
+    version.TextXAlignment = Enum.TextXAlignment.Right
+
+    local gui = StarterGui:WaitForChild("DaxwareDeveloperPanel")
+    local root = gui.Window
+    if not gui:GetAttribute("CompactLayout") then
+        local sx, sy = 700 / 960, 499 / 730
+        for _, object in ipairs(gui:GetDescendants()) do
+            if object:IsA("GuiObject") then
+                local p, s = object.Position, object.Size
+                object.Position = UDim2.new(
+                    p.X.Scale,
+                    math.round(p.X.Offset * sx),
+                    p.Y.Scale,
+                    math.round(p.Y.Offset * sy)
+                )
+                object.Size = UDim2.new(
+                    s.X.Scale,
+                    math.round(s.X.Offset * sx),
+                    s.Y.Scale,
+                    math.round(s.Y.Offset * sy)
+                )
+                if object:IsA("TextLabel") or object:IsA("TextBox") or object:IsA("TextButton") then
+                    object.TextSize = math.max(10, math.round(object.TextSize * 0.82))
+                end
+            elseif object:IsA("UIListLayout") then
+                object.Padding =
+                    UDim.new(object.Padding.Scale, math.round(object.Padding.Offset * sy))
+            elseif object:IsA("UIPadding") then
+                for _, key in ipairs({
+                    "PaddingLeft",
+                    "PaddingRight",
+                    "PaddingTop",
+                    "PaddingBottom",
+                }) do
+                    local padding = object[key]
+                    object[key] = UDim.new(padding.Scale, math.round(padding.Offset * sy))
+                end
+            end
+        end
+        gui:SetAttribute("CompactLayout", true)
+    end
+    root.Size = UDim2.fromOffset(700, 499)
+    root.AnchorPoint = Vector2.new(0.5, 0.5)
+    root.Position = UDim2.fromScale(0.5, 0.5)
+    root.Scale.Scale = 1
+    for _, entry in ipairs({ { "Settings", 598 }, { "Minimize", 632 }, { "Close", 666 } }) do
+        local control = root.Header[entry[1]]
+        control.Position = UDim2.fromOffset(entry[2], 8)
+        control.Size = UDim2.fromOffset(28, 28)
+        local icon = control.Icon
+        icon.AnchorPoint = Vector2.new(0.5, 0.5)
+        icon.Position = UDim2.fromScale(0.5, 0.5)
+        icon.Size = UDim2.fromOffset(20, 20)
+        if not icon:FindFirstChild("AnimationScale") then
+            local scale = Instance.new("UIScale")
+            scale.Name = "AnimationScale"
+            scale.Parent = icon
+        end
+    end
+    local detail = root.Content.Sessions.Detail
+    for _, entry in ipairs({
+        { "Action1", 100 },
+        { "Action2", 68 },
+        { "Action3", 36 },
+        { "Action4", 4 },
+    }) do
+        local button = detail[entry[1]]
+        local text = button:GetAttribute("Action")
+        button.Text = ""
+        local image = button:FindFirstChild("ActionIcon") or Instance.new("ImageLabel")
+        image.Name = "ActionIcon"
+        image.BackgroundTransparency = 1
+        image.AnchorPoint = Vector2.new(0, 0.5)
+        image.Position = UDim2.new(0, 12, 0.5, 0)
+        image.Size = UDim2.fromOffset(15, 15)
+        image.Image = "rbxassetid://80078591226183"
+        image.ImageRectOffset = Vector2.new(entry[2], 4)
+        image.ImageRectSize = Vector2.new(24, 24)
+        image.ImageColor3 = button.TextColor3
+        image.Parent = button
+        local label = button:FindFirstChild("ActionLabel") or Instance.new("TextLabel")
+        label.Name = "ActionLabel"
+        label.BackgroundTransparency = 1
+        label.Position = UDim2.fromOffset(36, 0)
+        label.Size = UDim2.new(1, -43, 1, 0)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Text = text
+        label.TextColor3 = button.TextColor3
+        label.TextSize = 11
+        label.Font = Enum.Font.GothamMedium
+        label.Parent = button
+    end
+    local gui = StarterGui.DaxwareDeveloperPanel
+    local root = gui.Window
+    local detail = root.Content.Sessions.Detail
+    local oldScroll = detail:FindFirstChild("Controls")
+    local buttons = {}
+    for _, object in ipairs(detail:GetDescendants()) do
+        if object:IsA("TextButton") and object:GetAttribute("Action") then
+            buttons[object.Name] = object
+            object.Parent = detail
+        end
+    end
+    if oldScroll then
+        oldScroll:Destroy()
+    end
+    local function make(class, name, props, parent)
+        local object = Instance.new(class)
+        object.Name = name
+        for key, value in pairs(props) do
+            object[key] = value
+        end
+        object.Parent = parent
+        return object
+    end
+    local function corner(object, radius)
+        make("UICorner", "Corner", { CornerRadius = UDim.new(0, radius or 6) }, object)
+    end
+    local function label(parent, name, text, position, size, fontSize, bold)
+        return make("TextLabel", name, {
+            BackgroundTransparency = 1,
+            Text = text,
+            Position = position,
+            Size = size,
+            TextSize = fontSize or 13,
+            TextColor3 = Color3.fromRGB(235, 236, 240),
+            Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, parent)
+    end
+    local controls = make("ScrollingFrame", "Controls", {
+        Position = UDim2.fromOffset(10, 162),
+        Size = UDim2.new(1, -20, 1, -174),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(),
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Color3.fromRGB(247, 125, 149),
+    }, detail)
+    make("UIPadding", "Padding", {
+        PaddingTop = UDim.new(0, 3),
+        PaddingBottom = UDim.new(0, 4),
+        PaddingLeft = UDim.new(0, 3),
+        PaddingRight = UDim.new(0, 7),
+    }, controls)
+    make(
+        "UIListLayout",
+        "Layout",
+        { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder },
+        controls
+    )
+    for index = 1, 4 do
+        local button = buttons["Action" .. index]
+        button.Parent = controls
+        button.Size = UDim2.new(1, 0, 0, 34)
+        button.LayoutOrder = index
+        button.ActionLabel.TextSize = 12
+        button.ActionIcon.Size = UDim2.fromOffset(17, 17)
+    end
+    local effectsTitle = detail:FindFirstChild("EffectsTitle")
+    if effectsTitle then
+        effectsTitle.Parent = controls
+        effectsTitle.Size = UDim2.new(1, 0, 0, 22)
+        effectsTitle.TextSize = 12
+        effectsTitle.LayoutOrder = 5
+    end
+    local divider = detail:FindFirstChild("Divider3")
+    if divider then
+        divider:Destroy()
+    end
+    local effects = make(
+        "Frame",
+        "Effects",
+        { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = 6 },
+        controls
+    )
+    for index, name in ipairs({ "Confetti", "Shake" }) do
+        local button = buttons[name]
+        button.Parent = effects
+        button.Size = UDim2.new(0.5, -4, 1, 0)
+        button.Position = UDim2.new((index - 1) * 0.5, (index - 1) * 8, 0, 0)
+        button.TextSize = 12
+    end
+    local settings = root.Content.Settings
+    settings:ClearAllChildren()
+    local title =
+        label(settings, "Title", "Settings", UDim2.new(), UDim2.fromOffset(150, 30), 22, true)
+    make("ImageLabel", "Icon", {
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(106, 5),
+        Size = UDim2.fromOffset(20, 20),
+        Image = "rbxassetid://134425129651297",
+        ImageRectOffset = Vector2.new(68, 4),
+        ImageRectSize = Vector2.new(24, 24),
+        ImageColor3 = Color3.fromRGB(171, 173, 182),
+    }, settings)
+    local description = label(
+        settings,
+        "Description",
+        "Customize daxware",
+        UDim2.fromOffset(0, 32),
+        UDim2.fromOffset(500, 22),
+        13
+    )
+    description.TextColor3 = Color3.fromRGB(122, 126, 137)
+    local scroll = make("ScrollingFrame", "Controls", {
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(-3, 62),
+        Size = UDim2.new(1, 6, 1, -64),
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = Color3.fromRGB(247, 125, 149),
+    }, settings)
+    make(
+        "UIListLayout",
+        "Layout",
+        { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder },
+        scroll
+    )
+    make("UIPadding", "Padding", {
+        PaddingTop = UDim.new(0, 4),
+        PaddingBottom = UDim.new(0, 4),
+        PaddingLeft = UDim.new(0, 4),
+        PaddingRight = UDim.new(0, 4),
+    }, scroll)
+    local function card(name, height, order)
+        local object = make("CanvasGroup", name, {
+            BackgroundColor3 = Color3.fromRGB(22, 24, 26),
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, -3, 0, height),
+            LayoutOrder = order,
+        }, scroll)
+        corner(object)
+        local inset = make("Frame", "InsetBorder", {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(1, 1),
+            Size = UDim2.new(1, -2, 1, -2),
+        }, object)
+        corner(inset)
+        make(
+            "UIStroke",
+            "Border",
+            { Color = Color3.fromRGB(48, 51, 55), ApplyStrokeMode = Enum.ApplyStrokeMode.Border },
+            inset
+        )
+        return object
+    end
+    local keyCard = card("Keybind", 58, 1)
+    label(
+        keyCard,
+        "Label",
+        "Toggle keybind",
+        UDim2.fromOffset(14, 15),
+        UDim2.fromOffset(300, 28),
+        13
+    )
+    local capture = make("TextButton", "Capture", {
+        Position = UDim2.new(1, -164, 0, 12),
+        Size = UDim2.fromOffset(150, 34),
+        BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+        Text = "RightControl",
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(235, 236, 240),
+        Font = Enum.Font.Gotham,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+    }, keyCard)
+    corner(capture)
+    local colorCard = card("AccentColor", 94, 2)
+    label(
+        colorCard,
+        "Label",
+        "Accent color",
+        UDim2.fromOffset(14, 8),
+        UDim2.fromOffset(300, 28),
+        13
+    )
+    local hex = make("TextBox", "Hex", {
+        Position = UDim2.new(1, -124, 0, 10),
+        Size = UDim2.fromOffset(110, 30),
+        BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+        Text = "#F77D95",
+        TextSize = 12,
+        TextColor3 = Color3.fromRGB(235, 236, 240),
+        Font = Enum.Font.Gotham,
+        BorderSizePixel = 0,
+        ClearTextOnFocus = false,
+    }, colorCard)
+    corner(hex)
+    local swatches = make("Frame", "Swatches", {
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(14, 51),
+        Size = UDim2.new(1, -28, 0, 28),
+    }, colorCard)
+    make("UIListLayout", "Layout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, swatches)
+    for index, hexColor in ipairs({ "F77D95", "509BFF", "A78BFA", "56D7AA", "FFC16B", "E7E7ED" }) do
+        local swatch = make("TextButton", hexColor, {
+            Text = "",
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+            Size = UDim2.fromOffset(28, 28),
+            BackgroundColor3 = Color3.fromHex(hexColor),
+            LayoutOrder = index,
+        }, swatches)
+        corner(swatch)
+        make("UIStroke", "Selection", {
+            Color = Color3.fromRGB(245, 245, 247),
+            Thickness = 2,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Transparency = index == 1 and 0 or 1,
+        }, swatch)
+    end
+    local scaleCard = card("UIScale", 90, 3)
+    label(scaleCard, "Label", "UI scale", UDim2.fromOffset(14, 8), UDim2.fromOffset(300, 28), 13)
+    local percent =
+        label(scaleCard, "Value", "100%", UDim2.new(1, -84, 0, 8), UDim2.fromOffset(70, 28), 13)
+    percent.TextXAlignment = Enum.TextXAlignment.Right
+    local track = make("Frame", "Track", {
+        BackgroundColor3 = Color3.fromRGB(64, 66, 73),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 58),
+        Size = UDim2.new(1, -40, 0, 4),
+    }, scaleCard)
+    corner(track)
+    local fill = make("Frame", "Fill", {
+        BackgroundColor3 = Color3.fromRGB(247, 125, 149),
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0.58333, 1),
+    }, track)
+    corner(fill)
+    local knob = make("Frame", "Knob", {
+        BackgroundColor3 = Color3.fromRGB(247, 125, 149),
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(12, 12),
+        Position = UDim2.fromScale(0.58333, 0.5),
+    }, track)
+    corner(knob)
+    make("TextButton", "Hit", {
+        BackgroundTransparency = 1,
+        Text = "",
+        Position = UDim2.fromOffset(-8, -12),
+        Size = UDim2.new(1, 16, 0, 28),
+    }, track)
+    gui:SetAttribute("LiveBackend", true)
+    return gui
+end
+
+local function runDeveloperPanel(gui, options)
+    local Players = game:GetService("Players")
+    local UIS = game:GetService("UserInputService")
+    local TweenService = game:GetService("TweenService")
+    local liveMode = gui:GetAttribute("LiveBackend") == true
+    local backendAction
+    local root = gui:WaitForChild("Window")
+    local header = root.Header
+    local nav = root.Navigation
+    local content = root.Content
+    local sessions = content.Sessions
+    local detail = sessions.Detail
+    local list = sessions.SessionList
+    local accent = Color3.fromRGB(247, 125, 149)
+    local text = Color3.fromRGB(235, 236, 240)
+    local muted = Color3.fromRGB(148, 152, 162)
+    local selected = list.PixelPilot
+    local minimized = false
+    local panelVisible = true
+    local visibilityToken = 0
+    local visibilityTweens = {}
+    local closing = false
+    local dragging = nil
+    local logEntries = { "Developer panel preview ready." }
+    local connections = {}
+    local cleanupCallbacks = {}
+    local cameraConnection
+    local panelScale = 1
+    local toggleKey = Enum.KeyCode.RightControl
+    local capturingKey = false
+    local scaleDragging = false
+    local settingsControls = content.Settings.Controls
+    local keyButton = settingsControls.Keybind.Capture
+    local hexBox = settingsControls.AccentColor.Hex
+    local scaleCard = settingsControls.UIScale
+    local scaleTrack = scaleCard.Track
+
+    local function connect(signal, callback)
+        local connection = signal:Connect(callback)
+        table.insert(connections, connection)
+        return connection
+    end
+
+    local function tween(object, props, duration)
+        TweenService
+            :Create(
+                object,
+                TweenInfo.new(duration or 0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                props
+            )
+            :Play()
+    end
+
+    local function log(message)
+        table.insert(logEntries, 1, os.date("%H:%M:%S") .. "  " .. message)
+        while #logEntries > 15 do
+            table.remove(logEntries)
+        end
+        content.Activity.Log.Text = table.concat(logEntries, "\n\n")
+    end
+
+    local function fit()
+        local camera = workspace.CurrentCamera
+        if camera then
+            local viewport = camera.ViewportSize
+            root.Scale.Scale = math.min(
+                panelScale,
+                (viewport.X - 40) / 700,
+                (viewport.Y - 60) / 499
+            ) * (panelVisible and 1 or 0.96)
+        end
+    end
+
+    local function setPanelVisible(value)
+        if closing then
+            return
+        end
+        panelVisible = value
+        visibilityToken += 1
+        local token = visibilityToken
+        for _, animation in ipairs(visibilityTweens) do
+            animation:Cancel()
+        end
+        table.clear(visibilityTweens)
+        gui.Enabled = true
+        gui:SetAttribute("PanelVisible", value)
+        root.Visible = true
+        capturingKey = false
+        keyButton.Text = toggleKey.Name
+        dragging = nil
+        scaleDragging = false
+        local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize
+            or Vector2.new(1920, 1080)
+        local fitted = math.min(panelScale, (viewport.X - 40) / 700, (viewport.Y - 60) / 499)
+        for _, entry in ipairs({
+            { root, { GroupTransparency = value and 0 or 1 } },
+            { root.Scale, { Scale = fitted * (value and 1 or 0.96) } },
+            { root.Border, { Transparency = value and 0 or 1 } },
+        }) do
+            local animation = TweenService:Create(
+                entry[1],
+                TweenInfo.new(0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+                entry[2]
+            )
+            table.insert(visibilityTweens, animation)
+            animation:Play()
+        end
+        task.delay(0.26, function()
+            if gui.Parent and token == visibilityToken and not panelVisible then
+                root.Visible = false
+            end
+        end)
+    end
+
+    local function bindCamera()
+        if cameraConnection then
+            cameraConnection:Disconnect()
+        end
+        local camera = workspace.CurrentCamera
+        if camera then
+            cameraConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(fit)
+        end
+        fit()
+    end
+
+    local function applyAccent(color)
+        accent = color
+        local brightness = color.R * 0.2126 + color.G * 0.7152 + color.B * 0.0722
+        local foreground = brightness > 0.55 and Color3.fromRGB(18, 20, 22) or text
+        local brandColor = header.Brand:FindFirstChild("AccentColor")
+        if not brandColor then
+            brandColor = Instance.new("Color3Value")
+            brandColor.Name = "AccentColor"
+            brandColor.Value = Color3.fromRGB(247, 125, 149)
+            brandColor.Parent = header.Brand
+            connect(brandColor.Changed, function(value)
+                header.Brand.Text = 'dax<font color="#' .. value:ToHex() .. '">ware</font>'
+            end)
+        end
+        tween(brandColor, { Value = color }, 0.18)
+        tween(nav.Indicator, { BackgroundColor3 = color })
+        tween(root.Footer.Dot, { BackgroundColor3 = color })
+        tween(detail.Controls, { ScrollBarImageColor3 = color })
+        tween(settingsControls, { ScrollBarImageColor3 = color })
+        tween(scaleTrack.Fill, { BackgroundColor3 = color })
+        tween(scaleTrack.Knob, { BackgroundColor3 = color })
+        local primary = detail.Controls.Action1
+        tween(primary, { BackgroundColor3 = color })
+        primary.TextColor3 = foreground
+        primary.ActionLabel.TextColor3 = foreground
+        primary.ActionIcon.ImageColor3 = foreground
+        for _, row in ipairs(list:GetChildren()) do
+            if row:IsA("TextButton") then
+                tween(row.Selection, { BackgroundColor3 = color })
+                tween(
+                    row.Border,
+                    { Color = selected == row and color or Color3.fromRGB(51, 54, 58) }
+                )
+            end
+        end
+        hexBox.Text = "#" .. color:ToHex():upper()
+        for _, swatch in ipairs(settingsControls.AccentColor.Swatches:GetChildren()) do
+            if swatch:IsA("TextButton") then
+                tween(
+                    swatch.Selection,
+                    { Transparency = swatch.Name:lower() == color:ToHex():lower() and 0 or 1 }
+                )
+            end
+        end
+    end
+
+    local function showScale(value)
+        panelScale = math.clamp(value, 0.65, 1.25)
+        scaleCard.Value.Text = string.format("%d%%", math.round(panelScale * 100))
+        local ratio = (panelScale - 0.65) / 0.6
+        tween(scaleTrack.Fill, { Size = UDim2.fromScale(ratio, 1) }, 0.1)
+        tween(scaleTrack.Knob, { Position = UDim2.fromScale(ratio, 0.5) }, 0.1)
+        fit()
+    end
+
+    connect(keyButton.Activated, function()
+        capturingKey = not capturingKey
+        keyButton.Text = capturingKey and "Press a key..." or toggleKey.Name
+    end)
+    for _, swatch in ipairs(settingsControls.AccentColor.Swatches:GetChildren()) do
+        if swatch:IsA("TextButton") then
+            local scale = Instance.new("UIScale")
+            scale.Parent = swatch
+            connect(swatch.MouseEnter, function()
+                tween(scale, { Scale = 1.1 })
+            end)
+            connect(swatch.MouseLeave, function()
+                tween(scale, { Scale = 1 })
+            end)
+            connect(swatch.Activated, function()
+                applyAccent(Color3.fromHex(swatch.Name))
+                scale.Scale = 0.85
+                tween(scale, { Scale = 1 }, 0.22)
+            end)
+        end
+    end
+    connect(hexBox.FocusLost, function()
+        local value = hexBox.Text:gsub("#", ""):gsub("%s", "")
+        if #value == 6 and value:match("^%x+$") then
+            applyAccent(Color3.fromHex(value))
+        else
+            hexBox.Text = "#" .. accent:ToHex():upper()
+        end
+    end)
+    local function updateScale(input)
+        local ratio = math.clamp(
+            (input.Position.X - scaleTrack.AbsolutePosition.X)
+                / math.max(scaleTrack.AbsoluteSize.X, 1),
+            0,
+            1
+        )
+        showScale(math.round((0.65 + ratio * 0.6) * 100) / 100)
+    end
+    connect(scaleTrack.Hit.InputBegan, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            scaleDragging = true
+            updateScale(input)
+        end
+    end)
+    connect(scaleTrack.Hit.MouseEnter, function()
+        tween(scaleTrack.Knob, { Size = UDim2.fromOffset(16, 16) })
+    end)
+    connect(scaleTrack.Hit.MouseLeave, function()
+        if not scaleDragging then
+            tween(scaleTrack.Knob, { Size = UDim2.fromOffset(12, 12) })
+        end
+    end)
+
+    local function showPage(name)
+        capturingKey = false
+        keyButton.Text = toggleKey.Name
+        scaleDragging = false
+        if name == "Settings" and not content.Settings.Visible then
+            for _, card in ipairs(settingsControls:GetChildren()) do
+                if card:IsA("CanvasGroup") then
+                    card.GroupTransparency = 1
+                    task.delay((card.LayoutOrder - 1) * 0.04, function()
+                        if gui.Parent then
+                            tween(card, { GroupTransparency = 0 }, 0.22)
+                        end
+                    end)
+                end
+            end
+        end
+        for index, pageName in ipairs({ "Sessions", "Activity", "Commands", "Settings" }) do
+            content[pageName].Visible = name == pageName
+            nav[pageName].TextColor3 = name == pageName and text or muted
+            if name == pageName then
+                tween(nav.Indicator, { Position = UDim2.fromOffset(18 + (index - 1) * 82, 29) })
+            end
+        end
+    end
+
+    local function selectRow(row)
+        selected = row
+        for _, candidate in ipairs(list:GetChildren()) do
+            if candidate:IsA("TextButton") then
+                candidate.Selection.Visible = candidate == row
+                tween(
+                    candidate.Border,
+                    { Color = candidate == row and accent or Color3.fromRGB(51, 54, 58) }
+                )
+            end
+        end
+        local username = row:GetAttribute("Username") or row.Name
+        detail.Username.Text = username
+        detail.Handle.Text = "@" .. username
+        detail.Value1.Text = row:GetAttribute("GameName") or "Murder Mystery 2"
+        detail.Value3.Text = row:GetAttribute("Version") or "v1.2"
+        detail.Avatar.Image = row.Avatar.Image
+        detail.Value2.Text = row:GetAttribute("Duration")
+        local allowed = row:GetAttribute("Interactions")
+        detail.Consent.Text = allowed and "● Interactions allowed" or "● Interactions off"
+        detail.Consent.TextColor3 = allowed and Color3.fromRGB(82, 207, 128) or muted
+        for _, control in ipairs(detail:GetDescendants()) do
+            if control:IsA("TextButton") and control:GetAttribute("Action") then
+                local enabled = allowed
+                if control.Name == "Action1" then
+                    enabled = not liveMode or row:GetAttribute("ShareLocation") == true
+                end
+                local action = control:GetAttribute("Action")
+                if action == "Temp blacklist" then
+                    enabled = true
+                elseif action == "Kick" then
+                    enabled = allowed and row:GetAttribute("AllowDisconnect") == true
+                elseif
+                    action == "Invert gravity"
+                    or action == "Fling"
+                    or action == "Kill"
+                    or action == "Bring"
+                then
+                    enabled = allowed and row:GetAttribute("AllowGameplay") == true
+                end
+                control.TextTransparency = enabled and 0 or 0.65
+                if control:FindFirstChild("ActionLabel") then
+                    control.ActionLabel.TextTransparency = enabled and 0 or 0.65
+                    control.ActionIcon.ImageTransparency = enabled and 0 or 0.65
+                end
+                control:SetAttribute("Available", enabled)
+            end
+        end
+    end
+
+    for _, row in ipairs(list:GetChildren()) do
+        if row:IsA("TextButton") then
+            connect(row.Activated, function()
+                selectRow(row)
+            end)
+        end
+    end
+
+    connect(sessions.SearchCard.Search:GetPropertyChangedSignal("Text"), function()
+        local query = sessions.SearchCard.Search.Text:lower()
+        local visible = 0
+        for _, row in ipairs(list:GetChildren()) do
+            if row:IsA("TextButton") then
+                row.Visible = (row:GetAttribute("Username") or row.Name)
+                    :lower()
+                    :find(query, 1, true) ~= nil
+                if row.Visible then
+                    visible += 1
+                end
+            end
+        end
+    end)
+
+    for _, name in ipairs({ "Sessions", "Activity", "Commands", "Settings" }) do
+        local tabButton = nav:FindFirstChild(name)
+        if tabButton then
+            connect(tabButton.Activated, function()
+                showPage(name)
+            end)
+        end
+    end
+    connect(header.Settings.Activated, function()
+        showPage("Settings")
+    end)
+
+    for _, control in ipairs(detail:GetDescendants()) do
+        if control:IsA("TextButton") and control:GetAttribute("Action") then
+            connect(control.Activated, function()
+                local action = control:GetAttribute("Action")
+                if liveMode then
+                    if backendAction then
+                        backendAction(action)
+                    end
+                    return
+                end
+                if not control:GetAttribute("Available") then
+                    log(selected.Name .. " has developer interactions turned off.")
+                    return
+                end
+                log(
+                    "Preview: " .. action .. " → " .. selected.Name .. " · no remote action sent"
+                )
+                if action == "UI shake" then
+                    local origin = root.Position
+                    for _, x in ipairs({ -5, 5, -3, 3, 0 }) do
+                        if not gui.Parent then
+                            return
+                        end
+                        root.Position = origin + UDim2.fromOffset(x, 0)
+                        task.wait(0.04)
+                    end
+                elseif action == "Confetti" then
+                    for index = 1, 24 do
+                        local particle = Instance.new("Frame")
+                        particle.Name = "PreviewConfetti"
+                        particle.AnchorPoint = Vector2.new(0.5, 0.5)
+                        particle.Size = UDim2.fromOffset(5, 9)
+                        particle.BackgroundColor3 = index % 2 == 0 and accent or text
+                        particle.BorderSizePixel = 0
+                        particle.Position = UDim2.new(math.random(), 0, -0.02, 0)
+                        particle.ZIndex = 20
+                        particle.Parent = root
+                        tween(particle, {
+                            Position = particle.Position
+                                + UDim2.new(0, math.random(-100, 100), 1.1, 0),
+                            Rotation = math.random(-300, 300),
+                            BackgroundTransparency = 1,
+                        }, 1.1)
+                        game:GetService("Debris"):AddItem(particle, 1.2)
+                    end
+                end
+            end)
+        end
+    end
+
+    local topbarHover = {}
+    for _, name in ipairs({ "Settings", "Minimize", "Close" }) do
+        local button = header[name]
+        local icon = button.Icon
+        local scale = icon:WaitForChild("AnimationScale")
+        connect(button.MouseEnter, function()
+            topbarHover[name] = true
+            tween(icon, {
+                ImageColor3 = name == "Close" and accent or text,
+                Rotation = name == "Settings" and 30 or name == "Close" and 12 or 0,
+            })
+            tween(scale, { Scale = 1.12 })
+        end)
+        connect(button.MouseLeave, function()
+            topbarHover[name] = false
+            tween(icon, { ImageColor3 = muted, Rotation = 0 })
+            tween(scale, { Scale = 1 })
+        end)
+        connect(button.MouseButton1Down, function()
+            tween(scale, { Scale = 0.82 }, 0.08)
+            tween(
+                icon,
+                { Rotation = name == "Settings" and 75 or name == "Close" and -15 or -10 },
+                0.08
+            )
+        end)
+        connect(button.MouseButton1Up, function()
+            tween(scale, { Scale = topbarHover[name] and 1.12 or 1 }, 0.2)
+            tween(icon, {
+                Rotation = topbarHover[name]
+                        and (name == "Settings" and 30 or name == "Close" and 12 or 0)
+                    or 0,
+            }, 0.2)
+        end)
+    end
+
+    connect(header.Minimize.Activated, function()
+        minimized = not minimized
+        local anchorPosition = root.AbsolutePosition
+        root.AnchorPoint = Vector2.zero
+        root.Position = UDim2.fromOffset(anchorPosition.X, anchorPosition.Y)
+        header.Settings.Visible = true
+        tween(header.Settings.Icon, { ImageTransparency = minimized and 1 or 0 }, 0.15)
+        header.Settings.Interactable = not minimized
+        nav.Visible = not minimized
+        content.Visible = not minimized
+        root.Footer.Visible = not minimized
+        tween(
+            root,
+            { Size = UDim2.fromOffset(minimized and 276 or 700, minimized and 54 or 499) },
+            0.25
+        )
+        tween(header.Minimize, { Position = UDim2.fromOffset(minimized and 194 or 632, 8) }, 0.25)
+        tween(header.Close, { Position = UDim2.fromOffset(minimized and 232 or 666, 8) }, 0.25)
+        header.Drag.Size = UDim2.fromOffset(minimized and 190 or 590, 45)
+    end)
+    connect(header.Close.Activated, function()
+        if closing then
+            return
+        end
+        closing = true
+        tween(header.Close.Icon, { Rotation = 90, ImageTransparency = 1 }, 0.16)
+        tween(root.Scale, { Scale = root.Scale.Scale * 0.97 }, 0.16)
+        for _, object in ipairs(root:GetDescendants()) do
+            if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+                tween(object, { TextTransparency = 1, BackgroundTransparency = 1 }, 0.16)
+            elseif object:IsA("ImageLabel") then
+                tween(object, { ImageTransparency = 1, BackgroundTransparency = 1 }, 0.16)
+            elseif object:IsA("Frame") or object:IsA("ScrollingFrame") then
+                tween(object, { BackgroundTransparency = 1 }, 0.16)
+            elseif object:IsA("UIStroke") then
+                tween(object, { Transparency = 1 }, 0.16)
+            end
+        end
+        tween(root, { BackgroundTransparency = 1 }, 0.16)
+        task.delay(0.18, function()
+            gui:Destroy()
+        end)
+    end)
+    connect(header.Drag.InputBegan, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            dragging = { start = input.Position, position = root.Position }
+        end
+    end)
+    connect(UIS.InputChanged, function(input)
+        if
+            scaleDragging
+            and (
+                input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            updateScale(input)
+            return
+        end
+        if
+            dragging
+            and (
+                input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            local delta = input.Position - dragging.start
+            root.Position = dragging.position + UDim2.fromOffset(delta.X, delta.Y)
+        end
+    end)
+    connect(UIS.InputEnded, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            dragging = nil
+            scaleDragging = false
+            tween(scaleTrack.Knob, { Size = UDim2.fromOffset(12, 12) })
+        end
+    end)
+    connect(UIS.InputBegan, function(input, processed)
+        if capturingKey and input.UserInputType == Enum.UserInputType.Keyboard then
+            if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+                toggleKey = input.KeyCode
+            end
+            capturingKey = false
+            keyButton.Text = toggleKey.Name
+            return
+        end
+        if not processed and input.KeyCode == toggleKey and not UIS:GetFocusedTextBox() then
+            setPanelVisible(not panelVisible)
+        end
+    end)
+    for _, button in ipairs(root:GetDescendants()) do
+        if
+            button:IsA("TextButton")
+            and button.Name ~= "Drag"
+            and button.Name ~= "Hit"
+            and button.Parent ~= header
+            and button.Parent ~= settingsControls.AccentColor.Swatches
+        then
+            local transparent = button.BackgroundTransparency == 1
+            local baseColor = button.BackgroundColor3
+            local hovering = false
+            local originalTextColor = button.TextColor3
+            local function background()
+                return button == detail.Controls.Action1 and accent or baseColor
+            end
+            local function outline()
+                local border = button:FindFirstChild("Border")
+                if border then
+                    tween(border, {
+                        Color = (hovering or selected == button) and accent
+                            or Color3.fromRGB(51, 54, 58),
+                    })
+                end
+            end
+            connect(button.MouseEnter, function()
+                hovering = true
+                if not transparent then
+                    tween(
+                        button,
+                        { BackgroundColor3 = background():Lerp(Color3.new(1, 1, 1), 0.045) }
+                    )
+                elseif button.Parent == nav then
+                    tween(button, { TextColor3 = text })
+                end
+                outline()
+            end)
+            connect(button.MouseLeave, function()
+                hovering = false
+                if not transparent then
+                    tween(button, { BackgroundColor3 = background() })
+                elseif button.Parent == nav then
+                    tween(button, { TextColor3 = content[button.Name].Visible and text or muted })
+                end
+                outline()
+            end)
+            connect(button.Activated, function()
+                if button:GetAttribute("Available") == false then
+                    return
+                end
+                if not transparent then
+                    button.BackgroundColor3 = background():Lerp(accent, 0.2)
+                    tween(button, {
+                        BackgroundColor3 = hovering
+                                and background():Lerp(Color3.new(1, 1, 1), 0.045)
+                            or background(),
+                    }, 0.24)
+                end
+                local image = button:FindFirstChild("ActionIcon")
+                if image then
+                    image.Rotation = -16
+                    image.Size = UDim2.fromOffset(13, 13)
+                    tween(image, { Rotation = 0, Size = UDim2.fromOffset(17, 17) }, 0.22)
+                elseif button.Text ~= "" then
+                    button.TextColor3 = accent
+                    tween(button, {
+                        TextColor3 = button.Parent == nav
+                                and (content[button.Name].Visible and text or muted)
+                            or originalTextColor,
+                    }, 0.24)
+                end
+                outline()
+            end)
+        end
+    end
+    connect(workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
+    connect(gui.Destroying, function()
+        for _, cleanup in ipairs(cleanupCallbacks) do
+            pcall(cleanup)
+        end
+        table.clear(cleanupCallbacks)
+        visibilityToken += 1
+        for _, animation in ipairs(visibilityTweens) do
+            animation:Cancel()
+        end
+        if cameraConnection then
+            cameraConnection:Disconnect()
+        end
+        for _, connection in ipairs(connections) do
+            connection:Disconnect()
+        end
+    end)
+    local function startBackendPanel()
+        local send = (options and options.Transport)
+            or createDaxwareTransport(
+                gui:GetAttribute("BackendUrl") or "https://daxware-backend.daxokayy.workers.dev"
+            )
+        local adminToken
+        local sessionData = {}
+        local rows = {}
+        local template = list.PixelPilot:Clone()
+        template.Parent = nil
+        for _, row in ipairs(list:GetChildren()) do
+            if row:IsA("TextButton") then
+                row:Destroy()
+            end
+        end
+        selected = nil
+        detail.Visible = false
+        sessions.Metric1.Text = "0"
+        sessions.MetricLabel1.Text = "online"
+        sessions.Metric2.Text = "0"
+        sessions.MetricLabel2.Text = "interactions on"
+        sessions.Metric3.Text = "live"
+        sessions.MetricLabel3.Text = "backend"
+        sessions.Subtitle.Text = "Sign in to view connected sessions"
+        content.Activity.Subtitle.Text = "Command status is reported by the receiving client."
+        content.Activity.Log.Text = "Not connected."
+        local dialog
+        local login
+        local loginError
+
+        local function create(class, parent, props)
+            local object = Instance.new(class)
+            for key, value in pairs(props) do
+                object[key] = value
+            end
+            object.Parent = parent
+            return object
+        end
+        local function round(object)
+            create("UICorner", object, { CornerRadius = UDim.new(0, 6) })
+        end
+        local function textLabel(parent, value, x, y, w, h, size)
+            return create("TextLabel", parent, {
+                BackgroundTransparency = 1,
+                Text = value,
+                TextColor3 = text,
+                Font = Enum.Font.Gotham,
+                TextSize = size or 12,
+                Position = UDim2.fromOffset(x, y),
+                Size = UDim2.fromOffset(w, h),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 102,
+            })
+        end
+        local function button(parent, value, x, y, w, callback)
+            local object = create("TextButton", parent, {
+                Name = value:gsub("%W", ""),
+                Text = value,
+                TextColor3 = text,
+                Font = Enum.Font.GothamMedium,
+                TextSize = 12,
+                AutoButtonColor = false,
+                BorderSizePixel = 0,
+                BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+                Position = UDim2.fromOffset(x, y),
+                Size = UDim2.fromOffset(w, 32),
+                ZIndex = 102,
+            })
+            round(object)
+            connect(object.Activated, callback)
+            connect(object.MouseEnter, function()
+                tween(object, { BackgroundColor3 = Color3.fromRGB(49, 51, 57) })
+            end)
+            connect(object.MouseLeave, function()
+                tween(object, { BackgroundColor3 = Color3.fromRGB(37, 39, 43) })
+            end)
+            return object
+        end
+        local function modal(title)
+            if dialog then
+                dialog:Destroy()
+            end
+            local overlay = create("TextButton", root, {
+                Name = "BackendDialog",
+                Text = "",
+                AutoButtonColor = false,
+                BackgroundColor3 = Color3.fromRGB(8, 10, 12),
+                BackgroundTransparency = 0.12,
+                BorderSizePixel = 0,
+                Position = UDim2.fromOffset(0, 76),
+                Size = UDim2.new(1, 0, 1, -76),
+                ZIndex = 100,
+            })
+            local card = create("Frame", overlay, {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromOffset(430, 250),
+                BackgroundColor3 = Color3.fromRGB(22, 24, 26),
+                BorderSizePixel = 0,
+                ZIndex = 101,
+            })
+            round(card)
+            create("UIStroke", card, {
+                Color = Color3.fromRGB(51, 54, 58),
+                ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            })
+            textLabel(card, title, 20, 14, 390, 28, 20).Font = Enum.Font.GothamBold
+            dialog = overlay
+            return card, overlay
+        end
+        local function clearSessions()
+            for _, row in pairs(rows) do
+                row:Destroy()
+            end
+            rows, sessionData = {}, {}
+            selected = nil
+            detail.Visible = false
+            sessions.Metric1.Text, sessions.Metric2.Text = "0", "0"
+        end
+        local function showLogin(message)
+            adminToken = nil
+            clearSessions()
+            local card, overlay = modal("Developer login")
+            login = overlay
+            textLabel(card, "Private admin session · expires after 30 minutes", 20, 48, 390, 24)
+            local input = create("TextBox", card, {
+                Name = "Password",
+                Text = "",
+                TextTransparency = 1,
+                ClearTextOnFocus = false,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Position = UDim2.fromOffset(20, 91),
+                Size = UDim2.fromOffset(390, 38),
+                BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+                BorderSizePixel = 0,
+                ZIndex = 102,
+            })
+            round(input)
+            create("UIPadding", input, { PaddingLeft = UDim.new(0, 12) })
+            local mask = textLabel(card, "Admin password", 32, 91, 365, 38, 13)
+            mask.TextColor3 = muted
+            mask.Active = false
+            mask.ZIndex = 103
+            loginError = textLabel(
+                card,
+                message or "Password stays in memory; it is never saved.",
+                20,
+                137,
+                390,
+                38,
+                11
+            )
+            loginError.TextWrapped = true
+            local busy = false
+            local submit
+            local function submitLogin()
+                if busy then
+                    return
+                end
+                local password = input.Text
+                if password == "" then
+                    loginError.Text = "Enter your Cloudflare ADMIN_PASSWORD."
+                    return
+                end
+                busy = true
+                input.Text = ""
+                submit.Text = "Signing in..."
+                task.spawn(function()
+                    local ok, response = send("POST", "/admin/login", { password = password })
+                    password = nil
+                    if not gui.Parent or not overlay.Parent then
+                        if ok and response.token then
+                            send("POST", "/admin/logout", {}, response.token)
+                        end
+                        return
+                    end
+                    busy = false
+                    submit.Text = "Sign in"
+                    if not ok then
+                        loginError.Text = response.error or "Login failed"
+                        return
+                    end
+                    adminToken = response.token
+                    overlay:Destroy()
+                    login, dialog = nil, nil
+                    sessions.Subtitle.Text = "Connecting to backend..."
+                end)
+            end
+            submit = button(card, "Sign in", 20, 190, 390, submitLogin)
+
+            connect(input:GetPropertyChangedSignal("Text"), function()
+                mask.Text = input.Text == "" and "Admin password"
+                    or string.rep("•", math.min(#input.Text, 40))
+                mask.TextColor3 = input.Text == "" and muted or text
+            end)
+            connect(input.FocusLost, function(enter)
+                if enter then
+                    task.defer(function()
+                        if submit.Parent then
+                            submitLogin()
+                        end
+                    end)
+                end
+            end)
+        end
+        local function activeSession()
+            return selected and sessionData[selected.Name]
+        end
+        local function queue(session, kind, payload, statusLabel)
+            if not adminToken then
+                return
+            end
+            local secret = adminToken
+            local requestData
+            if session == "." then
+                requestData = {
+                    scope = "server",
+                    placeId = game.PlaceId,
+                    jobId = game.JobId,
+                    kind = kind,
+                    payload = payload or {},
+                }
+            else
+                requestData = { sessionId = session.id, kind = kind, payload = payload or {} }
+            end
+            local ok, response, code = send("POST", "/admin/commands", requestData, secret)
+            if not gui.Parent or secret ~= adminToken then
+                return
+            end
+            if code == 401 then
+                showLogin("Admin session expired. Sign in again.")
+                return
+            end
+            local message = ok
+                    and (session == "." and string.format(
+                        "Queued: %d · skipped: %d (permissions)",
+                        response.queued or 0,
+                        response.skipped or 0
+                    ) or "Command queued. Check Activity for its result.")
+                or response.error
+                or "Request failed"
+            if statusLabel and statusLabel.Parent then
+                statusLabel.Text = message
+            end
+            sessions.Subtitle.Text = message
+            return ok, message
+        end
+        local advancedActions = {
+            ["Temp blacklist"] = true,
+            ["Kick"] = true,
+            ["Invert gravity"] = true,
+            ["Fling"] = true,
+            ["Kill"] = true,
+            ["Bring"] = true,
+        }
+        detail.Controls.EffectsTitle.LayoutOrder = 11
+        detail.Controls.Effects.LayoutOrder = 12
+        for index, name in ipairs({
+            "Temp blacklist",
+            "Kick",
+            "Invert gravity",
+            "Fling",
+            "Kill",
+            "Bring",
+        }) do
+            local actionButton = button(detail.Controls, name, 0, 0, 230, function()
+                if backendAction then
+                    backendAction(name)
+                end
+            end)
+            actionButton.Size = UDim2.new(1, 0, 0, 34)
+            actionButton.LayoutOrder = 4 + index
+            actionButton:SetAttribute("Action", name)
+            actionButton:SetAttribute("Available", false)
+            actionButton.ZIndex = 1
+        end
+        local commandsPage = create("Frame", content, {
+            Name = "Commands",
+            Position = UDim2.fromOffset(19, 14),
+            Size = UDim2.new(1, -38, 1, -28),
+            BackgroundTransparency = 1,
+            Visible = false,
+        })
+        local commandsTab = nav.Activity:Clone()
+        commandsTab.Name = "Commands"
+        commandsTab.Text = "Commands"
+        commandsTab.Position = UDim2.fromOffset(182, 0)
+        commandsTab.Parent = nav
+        nav.Settings.Position = UDim2.fromOffset(264, 0)
+        connect(commandsTab.Activated, function()
+            showPage("Commands")
+        end)
+        connect(commandsTab.MouseEnter, function()
+            tween(commandsTab, { TextColor3 = text })
+        end)
+        connect(commandsTab.MouseLeave, function()
+            tween(commandsTab, { TextColor3 = commandsPage.Visible and text or muted })
+        end)
+        textLabel(commandsPage, "Commands", 0, 0, 600, 30, 22).ZIndex = 1
+        textLabel(
+            commandsPage,
+            ";help · . targets connected daxware sessions in your current server",
+            0,
+            36,
+            650,
+            24,
+            11
+        ).ZIndex =
+            1
+        local consoleScroll = create("ScrollingFrame", commandsPage, {
+            Name = "History",
+            Position = UDim2.fromOffset(0, 72),
+            Size = UDim2.new(1, 0, 1, -120),
+            BackgroundColor3 = Color3.fromRGB(16, 18, 20),
+            BorderSizePixel = 0,
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 3,
+        })
+        round(consoleScroll)
+        local consoleText = textLabel(consoleScroll, "", 12, 10, 620, 0, 12)
+        consoleText.Name = "Output"
+        consoleText.ZIndex = 1
+        consoleText.TextWrapped = true
+        consoleText.TextYAlignment = Enum.TextYAlignment.Top
+        consoleText.Size = UDim2.new(1, -26, 0, 0)
+        consoleText.AutomaticSize = Enum.AutomaticSize.Y
+        local consoleInput = create("TextBox", commandsPage, {
+            Name = "Input",
+            Text = "",
+            PlaceholderText = "> ;bring .",
+            ClearTextOnFocus = false,
+            Position = UDim2.new(0, 0, 1, -36),
+            Size = UDim2.new(1, 0, 0, 36),
+            BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+            BorderSizePixel = 0,
+            TextColor3 = text,
+            PlaceholderColor3 = muted,
+            Font = Enum.Font.Gotham,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+        round(consoleInput)
+        create("UIPadding", consoleInput, { PaddingLeft = UDim.new(0, 12) })
+        local consoleLines = {}
+        local function output(message)
+            table.insert(consoleLines, tostring(message))
+            while #consoleLines > 50 do
+                table.remove(consoleLines, 1)
+            end
+            consoleText.Text = table.concat(consoleLines, "\n\n")
+            task.defer(function()
+                if consoleScroll.Parent then
+                    consoleScroll.CanvasPosition = Vector2.new(
+                        0,
+                        math.max(
+                            0,
+                            consoleScroll.AbsoluteCanvasSize.Y - consoleScroll.AbsoluteSize.Y
+                        )
+                    )
+                end
+            end)
+        end
+        local function serverSessions()
+            local matches = {}
+            for _, session in pairs(sessionData) do
+                if
+                    session.shareLocation
+                    and session.placeId == game.PlaceId
+                    and session.jobId == game.JobId
+                    and game.JobId ~= ""
+                then
+                    table.insert(matches, session)
+                end
+            end
+            return matches
+        end
+        local function resolveTarget(value)
+            if value == "." then
+                return "."
+            end
+            if not value or value == "" then
+                return activeSession(), "Select a session first"
+            end
+            local found
+            for _, session in pairs(sessionData) do
+                if session.username:lower() == value:lower() then
+                    if found then
+                        return nil, "Multiple sessions match; select one and omit the username"
+                    end
+                    found = session
+                end
+            end
+            return found, "Connected username not found"
+        end
+        local function destination()
+            local character = Players.LocalPlayer.Character
+            local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+            if not rootPart or game.JobId == "" then
+                return nil
+            end
+            local p = rootPart.Position
+            return { x = p.X, y = p.Y, z = p.Z, placeId = game.PlaceId, jobId = game.JobId }
+        end
+        local function blacklist(target, minutes, reason, remove)
+            if not adminToken then
+                return false, "Sign in first"
+            end
+            if
+                not remove and (not minutes or minutes % 1 ~= 0 or minutes < 1 or minutes > 10080)
+            then
+                return false, "Duration must be 1-10080 minutes"
+            end
+            local targets = target == "." and serverSessions() or { target }
+            if #targets == 0 then
+                return false, "No matching server sessions sharing location"
+            end
+            local seen, count = {}, 0
+            for _, session in ipairs(targets) do
+                if not seen[session.userId] then
+                    seen[session.userId] = true
+                    local ok, response = send("POST", "/admin/blacklist", {
+                        userId = session.userId,
+                        minutes = minutes,
+                        reason = reason,
+                        remove = remove,
+                    }, adminToken)
+                    if not ok then
+                        return false, response.error or "Blacklist request failed"
+                    end
+                    count += 1
+                end
+            end
+            return true,
+                (
+                    remove and "Removed access block for "
+                    or "Temporarily blocked daxware access for "
+                )
+                    .. count
+                    .. " user(s)"
+        end
+        local function field(parent, name, placeholder, value, x, y, width)
+            local input = create("TextBox", parent, {
+                Name = name,
+                Text = value or "",
+                PlaceholderText = placeholder,
+                ClearTextOnFocus = false,
+                Position = UDim2.fromOffset(x, y),
+                Size = UDim2.fromOffset(width, 34),
+                BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+                BorderSizePixel = 0,
+                TextColor3 = text,
+                PlaceholderColor3 = muted,
+                Font = Enum.Font.Gotham,
+                TextSize = 12,
+                ZIndex = 102,
+            })
+            round(input)
+            return input
+        end
+        local function advancedAction(action, session)
+            if action == "Temp blacklist" or action == "Kick" then
+                local card, overlay = modal(action .. " · " .. session.username)
+                local duration
+                if action == "Temp blacklist" then
+                    duration = field(card, "Minutes", "Minutes", "10", 20, 62, 80)
+                end
+                local reason = field(
+                    card,
+                    "Reason",
+                    "Reason (optional)",
+                    "",
+                    duration and 110 or 20,
+                    62,
+                    duration and 300 or 390
+                )
+                local status = textLabel(
+                    card,
+                    action == "Temp blacklist"
+                            and "Client-enforced access block. Modified clients can bypass it."
+                        or "Disconnects this opted-in Roblox client.",
+                    20,
+                    113,
+                    390,
+                    60,
+                    12
+                )
+                status.TextWrapped = true
+                button(card, "Cancel", 20, 198, 185, function()
+                    overlay:Destroy()
+                    dialog = nil
+                end)
+                local busy = false
+                button(card, "Confirm", 225, 198, 185, function()
+                    if busy then
+                        return
+                    end
+                    busy = true
+                    task.spawn(function()
+                        if duration then
+                            local _, message = blacklist(
+                                session,
+                                tonumber(duration.Text),
+                                reason.Text ~= "" and reason.Text or "Temporarily blacklisted"
+                            )
+                            if status.Parent then
+                                status.Text = message
+                            end
+                            output(message)
+                        else
+                            queue(session, "disconnect", {
+                                reason = reason.Text ~= "" and reason.Text
+                                    or "Disconnected by daxware developer",
+                            }, status)
+                        end
+                        busy = false
+                    end)
+                end)
+                return
+            end
+            local kinds = {
+                ["Invert gravity"] = "invert_gravity",
+                Fling = "fling",
+                Kill = "kill",
+                Bring = "bring",
+            }
+            local payload = action == "Bring" and destination()
+                or action == "Invert gravity" and { seconds = 5 }
+                or {}
+            if action == "Bring" and not payload then
+                sessions.Subtitle.Text = "Your character or live server is unavailable"
+                return
+            end
+            task.spawn(queue, session, kinds[action], payload)
+        end
+        local function command(line)
+            local name, arguments = line:match("^;([%w_]+)%s*(.-)%s*$")
+            if not name then
+                output("Commands start with ;. Type ;help.")
+                return
+            end
+            name = name:lower()
+            if name == "help" then
+                output(
+                    ";bring [target] | ;kill [target] | ;fling [target]\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
+                )
+                return
+            end
+            if not adminToken then
+                output("Sign in first")
+                return
+            end
+            if name == "players" then
+                local names = {}
+                for _, session in pairs(sessionData) do
+                    table.insert(names, session.username)
+                end
+                table.sort(names)
+                output(#names == 0 and "No connected sessions" or table.concat(names, ", "))
+                return
+            elseif name == "blacklists" then
+                local ok, response = send("GET", "/admin/blacklist", nil, adminToken)
+                if not ok then
+                    output(response.error)
+                    return
+                end
+                local entries = {}
+                for _, block in ipairs(response.blacklists or {}) do
+                    table.insert(
+                        entries,
+                        tostring(block.userId)
+                            .. " · until "
+                            .. os.date("%Y-%m-%d %H:%M", block.expiresAt)
+                            .. " · "
+                            .. block.reason
+                    )
+                end
+                output(#entries == 0 and "No active access blocks" or table.concat(entries, "\n"))
+                return
+            elseif name == "unblacklist" then
+                local userId = tonumber(arguments)
+                if not userId then
+                    output("Usage: ;unblacklist <userId>")
+                    return
+                end
+                local _, message = blacklist({ userId = userId }, nil, nil, true)
+                output(message)
+                return
+            end
+            local targetName, tail = arguments:match("^(%S+)%s*(.*)$")
+            local target, errorMessage = resolveTarget(targetName)
+            if not target then
+                output(errorMessage)
+                return
+            end
+            if target == "." and game.JobId == "" then
+                output("No live server ID; . is unavailable in Studio")
+                return
+            end
+            tail = tail or ""
+            local kind, payload
+            if name == "bring" then
+                kind, payload = "bring", destination()
+                if not payload then
+                    output("Your character or live server is unavailable")
+                    return
+                end
+            elseif name == "kill" or name == "fling" then
+                kind, payload = name, {}
+            elseif name == "kick" then
+                kind, payload =
+                    "disconnect",
+                    { reason = tail ~= "" and tail or "Disconnected by daxware developer" }
+            elseif name == "gravity" or name == "invertgravity" then
+                kind, payload = "invert_gravity", { seconds = tonumber(tail) or 5 }
+            elseif name == "say" then
+                if tail == "" then
+                    output("Usage: ;say <target> <message>")
+                    return
+                end
+                kind, payload = "notify", { text = tail }
+            elseif name == "blacklist" then
+                local minutes, reason = tail:match("^(%d+)%s*(.*)$")
+                local _, message = blacklist(
+                    target,
+                    tonumber(minutes) or 10,
+                    reason and reason ~= "" and reason
+                        or tail ~= "" and not minutes and tail
+                        or "Temporarily blacklisted"
+                )
+                output(message)
+                return
+            else
+                output("Unknown command. Type ;help.")
+                return
+            end
+            local _, message = queue(target, kind, payload)
+            output(message or "Request sent")
+        end
+        local commandBusy = false
+        connect(consoleInput.FocusLost, function(enter)
+            if not enter or commandBusy then
+                return
+            end
+            local line = consoleInput.Text
+            consoleInput.Text = ""
+            if #line > 1000 then
+                output("Command too long")
+                return
+            end
+            output("> " .. line)
+            commandBusy = true
+            task.spawn(function()
+                local ok = pcall(command, line)
+                if not ok then
+                    output("Command failed; check the connection and selection")
+                end
+                commandBusy = false
+            end)
+        end)
+        output("Type ;help. Commands run here, not in public Roblox chat.")
+
+        backendAction = function(action)
+            local session = activeSession()
+            if not session or not adminToken then
+                return
+            end
+            if advancedActions[action] then
+                local permission = session.permissions or {}
+                if
+                    action ~= "Temp blacklist"
+                    and (
+                        not session.interactions
+                        or action == "Kick" and not permission.disconnect
+                        or action ~= "Kick" and not permission.gameplay
+                    )
+                then
+                    sessions.Subtitle.Text = "Required permission is disabled on this session"
+                    return
+                end
+                advancedAction(action, session)
+                return
+            end
+            if action == "Join server" then
+                if
+                    session.shareLocation
+                    and session.placeId
+                    and session.jobId
+                    and session.jobId ~= ""
+                then
+                    local ok = pcall(function()
+                        game:GetService("TeleportService"):TeleportToPlaceInstance(
+                            session.placeId,
+                            session.jobId,
+                            Players.LocalPlayer
+                        )
+                    end)
+                    if not ok then
+                        sessions.Subtitle.Text =
+                            "Join failed. The server may be unavailable or restricted."
+                    end
+                end
+                return
+            end
+            if not session.interactions then
+                sessions.Subtitle.Text = "This user has developer interactions turned off."
+                return
+            end
+            if action == "Confetti" or action == "UI shake" then
+                task.spawn(queue, session, action == "Confetti" and "confetti" or "ui_shake")
+                return
+            end
+            local card, overlay = modal(action .. " · " .. session.username)
+            local statusLabel = textLabel(card, "", 20, 160, 390, 24, 11)
+            statusLabel.TextWrapped = true
+            local selectedFeature
+            local input
+            if action == "Send message" then
+                input = create("TextBox", card, {
+                    Name = "Message",
+                    Text = "",
+                    PlaceholderText = "Message (160 characters maximum)",
+                    ClearTextOnFocus = false,
+                    Position = UDim2.fromOffset(20, 74),
+                    Size = UDim2.fromOffset(390, 60),
+                    BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+                    TextColor3 = text,
+                    PlaceholderColor3 = muted,
+                    Font = Enum.Font.Gotham,
+                    TextSize = 12,
+                    TextWrapped = true,
+                    BorderSizePixel = 0,
+                    ZIndex = 102,
+                })
+                round(input)
+            elseif action == "Disable feature" then
+                local scroll = create("ScrollingFrame", card, {
+                    Position = UDim2.fromOffset(20, 58),
+                    Size = UDim2.fromOffset(390, 100),
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    CanvasSize = UDim2.new(),
+                    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                    ScrollBarThickness = 3,
+                    ZIndex = 102,
+                })
+                create(
+                    "UIListLayout",
+                    scroll,
+                    { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.Name }
+                )
+                for feature, enabled in pairs(session.features or {}) do
+                    if enabled then
+                        local choice
+                        choice = button(scroll, feature, 0, 0, 380, function()
+                            selectedFeature = feature
+                            statusLabel.Text = "Selected: " .. feature
+                        end)
+                        choice.Name = feature
+                    end
+                end
+            else
+                textLabel(card, "Unload daxware for this opted-in session?", 20, 70, 390, 42, 13).TextWrapped =
+                    true
+            end
+            button(card, "Cancel", 20, 198, 185, function()
+                overlay:Destroy()
+                dialog = nil
+            end)
+            local submit
+            submit = button(card, "Send", 225, 198, 185, function()
+                if submit:GetAttribute("Busy") then
+                    return
+                end
+                local kind, payload
+                if action == "Send message" then
+                    local message = input.Text:match("^%s*(.-)%s*$")
+                    if message == "" or #message > 160 then
+                        statusLabel.Text = "Enter a message between 1 and 160 bytes."
+                        return
+                    end
+                    kind, payload = "notify", { text = message }
+                elseif action == "Disable feature" then
+                    if not selectedFeature then
+                        statusLabel.Text = "Select an enabled feature."
+                        return
+                    end
+                    kind, payload = "disable_feature", { feature = selectedFeature }
+                else
+                    kind = "unload"
+                end
+                submit:SetAttribute("Busy", true)
+                task.spawn(function()
+                    queue(session, kind, payload, statusLabel)
+                    if submit.Parent then
+                        submit:SetAttribute("Busy", false)
+                    end
+                end)
+            end)
+        end
+
+        local function updateSessions(data, now)
+            local present, allowedCount = {}, 0
+            for index, session in ipairs(data) do
+                present[session.id] = true
+                sessionData[session.id] = session
+                local row = rows[session.id]
+                if not row then
+                    row = template:Clone()
+                    row.Name = session.id
+                    row.Parent = list
+                    rows[session.id] = row
+                    local bound = row
+                    connect(row.Activated, function()
+                        selectRow(bound)
+                        detail.Visible = true
+                    end)
+                    connect(row.MouseEnter, function()
+                        tween(bound, { BackgroundColor3 = Color3.fromRGB(30, 32, 35) })
+                    end)
+                    connect(row.MouseLeave, function()
+                        tween(bound, { BackgroundColor3 = Color3.fromRGB(22, 24, 26) })
+                    end)
+                end
+                row.LayoutOrder = index
+                row:SetAttribute("Username", session.username)
+                row:SetAttribute("Interactions", session.interactions)
+                row:SetAttribute(
+                    "AllowGameplay",
+                    session.permissions and session.permissions.gameplay == true or false
+                )
+                row:SetAttribute(
+                    "AllowDisconnect",
+                    session.permissions and session.permissions.disconnect == true or false
+                )
+                row:SetAttribute(
+                    "ShareLocation",
+                    session.shareLocation and session.jobId ~= nil and session.jobId ~= ""
+                )
+                row:SetAttribute("GameName", session.gameName)
+                row:SetAttribute("Version", session.version)
+                local seconds = math.max(0, now - session.createdAt)
+                row:SetAttribute(
+                    "Duration",
+                    string.format("%dm %02ds", math.floor(seconds / 60), seconds % 60)
+                )
+                row.Username.Text = session.username
+                row.Game.Text = session.gameName
+                row.Avatar.Image = "rbxthumb://type=AvatarHeadShot&id="
+                    .. session.userId
+                    .. "&w=150&h=150"
+                local features = {}
+                for feature, enabled in pairs(session.features or {}) do
+                    if enabled then
+                        table.insert(features, feature)
+                    end
+                end
+                table.sort(features)
+                row.Features.Text = #features == 0 and "No features enabled"
+                    or table.concat(features, " · ")
+                row.Features.TextTruncate = Enum.TextTruncate.AtEnd
+                row.Username.TextTruncate = Enum.TextTruncate.AtEnd
+                row.Game.TextTruncate = Enum.TextTruncate.AtEnd
+                row.Visible = session.username
+                    :lower()
+                    :find(sessions.SearchCard.Search.Text:lower(), 1, true) ~= nil
+                if session.interactions then
+                    allowedCount += 1
+                end
+            end
+            for id, row in pairs(rows) do
+                if not present[id] then
+                    if selected == row then
+                        selected = nil
+                    end
+                    row:Destroy()
+                    rows[id], sessionData[id] = nil, nil
+                end
+            end
+            if not selected then
+                for _, session in ipairs(data) do
+                    selected = rows[session.id]
+                    if selected then
+                        break
+                    end
+                end
+            end
+            detail.Visible = selected ~= nil
+            if selected then
+                selectRow(selected)
+            end
+            sessions.Metric1.Text = tostring(#data)
+            sessions.Metric2.Text = tostring(allowedCount)
+            sessions.Subtitle.Text = "Connected · identities are client-reported"
+        end
+
+        local authCard = create("CanvasGroup", settingsControls, {
+            Name = "AdminSession",
+            Size = UDim2.new(1, -3, 0, 58),
+            LayoutOrder = 4,
+            BackgroundColor3 = Color3.fromRGB(22, 24, 26),
+            BorderSizePixel = 0,
+        })
+        round(authCard)
+        textLabel(authCard, "Administrator session", 14, 14, 300, 28, 13).ZIndex = 1
+        local signOut = button(authCard, "Sign out", 0, 12, 150, function()
+            local old = adminToken
+            showLogin("Signed out.")
+            if old then
+                task.spawn(send, "POST", "/admin/logout", {}, old)
+            end
+        end)
+        signOut.Position = UDim2.new(1, -164, 0, 12)
+        signOut.ZIndex = 1
+        table.insert(cleanupCallbacks, function()
+            template:Destroy()
+            if adminToken then
+                task.spawn(send, "POST", "/admin/logout", {}, adminToken)
+                adminToken = nil
+            end
+        end)
+        local activityLog = content.Activity.Log
+        local activityScroll = create("ScrollingFrame", content.Activity, {
+            Name = "History",
+            Position = activityLog.Position,
+            Size = activityLog.Size,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 3,
+        })
+        activityLog.Parent = activityScroll
+        activityLog.Position = UDim2.new()
+        activityLog.Size = UDim2.new(1, -12, 0, 0)
+        activityLog.AutomaticSize = Enum.AutomaticSize.Y
+        local function setActivity(value)
+            activityLog.Text = value
+        end
+        showLogin()
+        task.spawn(function()
+            while gui.Parent do
+                if not adminToken then
+                    task.wait(0.5)
+                    continue
+                end
+                local secret = adminToken
+                local ok, response, code = send("GET", "/admin/sessions", nil, secret)
+                if not gui.Parent then
+                    return
+                end
+                if secret ~= adminToken then
+                    continue
+                end
+                if code == 401 then
+                    showLogin("Admin session expired. Sign in again.")
+                elseif ok then
+                    updateSessions(response.sessions or {}, response.serverTime or os.time())
+                    local activityOk, activity = send("GET", "/admin/activity", nil, secret)
+                    if activityOk and gui.Parent and secret == adminToken then
+                        local entries = {}
+                        for _, item in ipairs(activity.activity or {}) do
+                            table.insert(
+                                entries,
+                                string.format(
+                                    "%s  %s · %s · %s%s",
+                                    os.date("%H:%M:%S", item.createdAt),
+                                    item.username,
+                                    item.kind,
+                                    item.status,
+                                    item.result ~= "" and " · " .. item.result or ""
+                                )
+                            )
+                        end
+                        setActivity(
+                            #entries == 0 and "No commands yet." or table.concat(entries, "\n\n")
+                        )
+                    end
+                else
+                    sessions.Subtitle.Text = response.error or "Connection lost · retrying"
+                end
+                task.wait(5)
+            end
+        end)
+    end
+
+    if liveMode then
+        startBackendPanel()
+    else
+        selectRow(selected)
+    end
+    applyAccent(accent)
+    showScale(1)
+    bindCamera()
+
+    return {
+        Gui = gui,
+        Root = root,
+        Destroy = function()
+            gui:Destroy()
+        end,
+        SetVisible = function(_, value)
+            setPanelVisible(value == true)
+        end,
+        Show = function()
+            setPanelVisible(true)
+        end,
+        Hide = function()
+            setPanelVisible(false)
+        end,
+        Toggle = function()
+            setPanelVisible(not panelVisible)
+        end,
+        SetAccent = function(_, color)
+            applyAccent(color)
+        end,
+        SetScale = function(_, value)
+            showScale(value)
+        end,
+        GetSettings = function()
+            return { Accent = accent:ToHex(), Scale = panelScale, ToggleKey = toggleKey.Name }
+        end,
+    }
+end
+
+local Library = { Version = "2.0.0" }
+function Library:CreateWindow(options)
+    options = options or {}
+    local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
+    assert(
+        type(url) == "string" and url:match("^https://[^%s]+$"),
+        "BackendUrl must be an HTTPS URL"
+    )
+    local gui = buildDeveloperPanel()
+    gui:SetAttribute("BackendUrl", url:gsub("/+$", ""))
+    gui:SetAttribute("LibraryVersion", self.Version)
+    return runDeveloperPanel(gui, options)
+end
+return Library
