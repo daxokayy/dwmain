@@ -105,6 +105,9 @@ local iconOffsets = {
 
 local function addIcon(parent, name, position, size)
     local value = tostring(name)
+    if string.lower(value) == "coins" or value:match("%d+") == "96614676664859" then
+        value = "117532411052616"
+    end
     if value:match("%d+") == "73498261973195" then
         value = "139501903412663"
     end
