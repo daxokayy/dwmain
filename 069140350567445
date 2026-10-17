@@ -1437,10 +1437,14 @@ local function runDeveloperPanel(gui, options)
                 ZIndex = 101,
             })
             round(card)
-            create("UIStroke", card, {
-                Color = Color3.fromRGB(51, 54, 58),
-                ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-            })
+            create(
+                "UIStroke",
+                card,
+                {
+                    Color = Color3.fromRGB(51, 54, 58),
+                    ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+                }
+            )
             textLabel(card, title, 20, 14, 390, 28, 20).Font = Enum.Font.GothamBold
             dialog = overlay
             return card, overlay
@@ -1758,12 +1762,17 @@ local function runDeveloperPanel(gui, options)
             for _, session in ipairs(targets) do
                 if not seen[session.userId] then
                     seen[session.userId] = true
-                    local ok, response = send("POST", "/admin/blacklist", {
-                        userId = session.userId,
-                        minutes = minutes,
-                        reason = reason,
-                        remove = remove,
-                    }, adminToken)
+                    local ok, response = send(
+                        "POST",
+                        "/admin/blacklist",
+                        {
+                            userId = session.userId,
+                            minutes = minutes,
+                            reason = reason,
+                            remove = remove,
+                        },
+                        adminToken
+                    )
                     if not ok then
                         return false, response.error or "Blacklist request failed"
                     end
@@ -1977,12 +1986,11 @@ local function runDeveloperPanel(gui, options)
             output(message or "Request sent")
         end
         local commandBusy = false
-        connect(consoleInput.FocusLost, function(enter)
-            if not enter or commandBusy then
+        local function submitCommand(line)
+            if commandBusy then
+                output("A command is still processing; try again shortly")
                 return
             end
-            local line = consoleInput.Text
-            consoleInput.Text = ""
             if #line > 1000 then
                 output("Command too long")
                 return
@@ -1996,8 +2004,32 @@ local function runDeveloperPanel(gui, options)
                 end
                 commandBusy = false
             end)
+        end
+        connect(consoleInput.FocusLost, function(enter)
+            if not enter then
+                return
+            end
+            local line = consoleInput.Text
+            consoleInput.Text = ""
+            submitCommand(line)
         end)
-        output("Type ;help. Commands run here, not in public Roblox chat.")
+        local TextChatService = game:GetService("TextChatService")
+        connect(TextChatService.SendingMessage, function(message)
+            if not adminToken then
+                return
+            end
+            local channel = message.TextChannel
+            if not channel or channel.Name ~= "RBXGeneral" then
+                return
+            end
+            local line = message.Text
+            if type(line) == "string" and line:match("^;[%w_]+") then
+                submitCommand(line)
+            end
+        end)
+        output(
+            "Type ;help here or in Roblox general chat after signing in. Chat commands remain visible in chat."
+        )
 
         backendAction = function(action)
             local session = activeSession()
@@ -2362,7 +2394,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.1.0" }
+local Library = { Version = "2.2.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
