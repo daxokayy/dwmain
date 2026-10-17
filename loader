@@ -1,0 +1,8 @@
+local BASE = "https://raw.githubusercontent.com/daxokayy/dwmain/refs/heads/main/"
+local source = game:HttpGet(BASE .. "dw_games")
+local games = loadstring(source)()
+
+local script = table.find(games, game.PlaceId)
+    and (BASE .. tostring(game.PlaceId))
+    or (BASE .. "dw_main.lua")
+loadstring(game:HttpGet(script))()
