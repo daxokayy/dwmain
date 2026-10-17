@@ -105,12 +105,23 @@ local iconOffsets = {
 
 local function addIcon(parent, name, position, size)
     local value = tostring(name)
-    if value:match("%d+") == "73498261973195" then value = "139501903412663" end
-    if value:match("%d+") == "136481847167022" then value = "112628579754311" end
+    if value:match("%d+") == "73498261973195" then
+        value = "139501903412663"
+    end
+    if value:match("%d+") == "136481847167022" then
+        value = "112628579754311"
+    end
     local offset = iconOffsets[string.lower(value)]
-    if value:match("%d+") == "86469743635172" then value = "103189582822867" end
-    local standaloneImage = value:match("%d+") == "125304603079291" and "rbxassetid://98729914829489" or asset(value)
-    assert(offset or value:match("^%d+$") or value:match("^rbxassetid://%d+$"), "Unknown icon: " .. value)
+    if value:match("%d+") == "86469743635172" then
+        value = "103189582822867"
+    end
+    local standaloneImage = value:match("%d+") == "125304603079291"
+            and "rbxassetid://98729914829489"
+        or asset(value)
+    assert(
+        offset or value:match("^%d+$") or value:match("^rbxassetid://%d+$"),
+        "Unknown icon: " .. value
+    )
     return make("ImageLabel", {
         Name = "Icon",
         BackgroundTransparency = 1,
@@ -371,7 +382,8 @@ local function installSettings(ctx)
         Visible = false,
     }, ctx.body)
     local heading = text(page, "Title", "Settings", UDim2.fromOffset(19, 17), 26, true)
-    local headingWidth = game:GetService("TextService"):GetTextSize("Settings", 26, Enum.Font.GothamBold, Vector2.new(10000, 100)).X
+    local headingWidth = game:GetService("TextService")
+        :GetTextSize("Settings", 26, Enum.Font.GothamBold, Vector2.new(10000, 100)).X
     create("ImageLabel", {
         Name = "Icon",
         BackgroundTransparency = 1,
@@ -382,8 +394,7 @@ local function installSettings(ctx)
         Position = UDim2.new(0, headingWidth + 8, 0.5, -11),
         Size = UDim2.fromOffset(22, 22),
     }, heading)
-    local description =
-        text(page, "Description", "Customize daxware", UDim2.fromOffset(19, 46), 14)
+    local description = text(page, "Description", "Customize daxware", UDim2.fromOffset(19, 46), 14)
     description.TextColor3 = Color3.fromRGB(122, 126, 137)
     local scroll = create("ScrollingFrame", {
         Name = "Controls",
@@ -679,6 +690,21 @@ local function installSettings(ctx)
                     end
                 end)
             end
+        end
+    end)
+    ctx.connect(ctx.root:GetAttributeChangedSignal("SettingsRevision"), function()
+        if not ctx.root:GetAttribute("CapturingKey") then
+            keyButton.Text = ctx.key().Name
+        end
+        hex.Text = "#" .. ctx.accent():ToHex():upper()
+        scroll.ScrollBarImageColor3 = ctx.accent()
+        showScale(ctx.scale())
+        for swatch, stroke in pairs(selections) do
+            ctx.tween(
+                stroke,
+                { Transparency = swatch.Name:lower() == ctx.accent():ToHex():lower() and 0 or 1 },
+                0.15
+            )
         end
     end)
     return page
@@ -1015,7 +1041,7 @@ function UI:CreateWindow(config)
             return opt(config, "Scale", 1)
         end,
         setKey = function(key)
-            w.toggleKey = key
+            w:SetToggleKey(key)
         end,
         setAccent = function(color)
             w:SetAccent(color)
@@ -1053,6 +1079,10 @@ function Window:SetAccent(color)
     assert(typeof(color) == "Color3", "Accent must be a Color3")
     captureAccent(self.accentBindings, self.accentSeen, self.root, self.accent)
     self.accent = color
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
     if self.brandAccent then
         animate(self, self.brandAccent, { Value = color }, 0.18)
     end
@@ -1072,9 +1102,15 @@ function Window:SetAccent(color)
                 animate(self, tab.button, { TextColor3 = color }, 0.18)
             end
             for _, element in ipairs(tab.elements) do
-                if not element.destroyed and element.kind == "preview" and element.mode == "aim" then
+                if
+                    not element.destroyed
+                    and element.kind == "preview"
+                    and element.mode == "aim"
+                then
                     local stroke = element.circle:FindFirstChildOfClass("UIStroke")
-                    if stroke then animate(self, stroke, { Color = color }, 0.18) end
+                    if stroke then
+                        animate(self, stroke, { Color = color }, 0.18)
+                    end
                     for _, visual in ipairs({ element.line, element.center, element.dot }) do
                         animate(self, visual, { BackgroundColor3 = color }, 0.18)
                     end
@@ -1097,11 +1133,72 @@ end
 function Window:SetScale(value)
     self.config.Scale = math.clamp(value, 0.65, 1.25)
     self.refit()
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
 end
 
 function Window:SetToggleKey(key)
     assert(typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode, "Expected a KeyCode")
     self.toggleKey = key
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
+end
+
+function Window:GetSettings()
+    return {
+        Accent = self.accent:ToHex(),
+        Scale = opt(self.config, "Scale", 1),
+        ToggleKey = self.toggleKey.Name,
+    }
+end
+
+function Window:ApplySettings(data)
+    if type(data) ~= "table" then
+        return false, "Settings must be a table"
+    end
+    local accent, scale, key
+    if data.Accent ~= nil then
+        if type(data.Accent) ~= "string" or not data.Accent:match("^%x%x%x%x%x%x$") then
+            return false, "Invalid accent color"
+        end
+        accent = Color3.fromHex(data.Accent)
+    end
+    if data.Scale ~= nil then
+        if
+            type(data.Scale) ~= "number"
+            or data.Scale ~= data.Scale
+            or math.abs(data.Scale) == math.huge
+        then
+            return false, "Invalid UI scale"
+        end
+        scale = math.clamp(data.Scale, 0.65, 1.25)
+    end
+    if data.ToggleKey ~= nil then
+        if type(data.ToggleKey) ~= "string" then
+            return false, "Invalid keybind"
+        end
+        local ok, result = pcall(function()
+            return Enum.KeyCode[data.ToggleKey]
+        end)
+        if not ok or not result or result == Enum.KeyCode.Unknown then
+            return false, "Invalid keybind"
+        end
+        key = result
+    end
+    if accent then
+        self:SetAccent(accent)
+    end
+    if scale then
+        self:SetScale(scale)
+    end
+    if key then
+        self:SetToggleKey(key)
+    end
+    return true
 end
 
 function Window:_ClampPosition(position, targetSize)
@@ -1445,8 +1542,23 @@ function Tab:AddGroup(config)
     }, g.frame)
     local title = opt(config, "Title", nil)
     if title then
-        label(g.frame, "Title", title, 13, UDim2.new(), UDim2.new(1, -26, 0, 27), C.Muted, true).LayoutOrder =
-            0
+        local header = make("Frame", {
+            Name = "GroupHeader",
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 32),
+            LayoutOrder = 0,
+        }, g.frame)
+        g.title = label(
+            header,
+            "Title",
+            title,
+            14,
+            UDim2.fromOffset(13, 0),
+            UDim2.new(1, -26, 1, 0),
+            C.Muted,
+            true
+        )
+        g.title.TextTruncate = Enum.TextTruncate.AtEnd
     end
     table.insert(self.elements, g)
     self:_Arrange()
@@ -1753,8 +1865,16 @@ function Group:AddDropdown(config)
     c.open = false
     c.optionConnections = {}
     c.options = {}
-    c.label = label(f, "Label", opt(config, "Name", "Dropdown"), 14, UDim2.fromOffset(13, 0), UDim2.new(0.42, -16, 0, 42))
-    local selected = label(f, "Selected", "", 13, UDim2.new(0.42, 0, 0, 0), UDim2.new(0.58, -43, 0, 42), C.Muted)
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Dropdown"),
+        14,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(0.42, -16, 0, 42)
+    )
+    local selected =
+        label(f, "Selected", "", 13, UDim2.new(0.42, 0, 0, 0), UDim2.new(0.58, -43, 0, 42), C.Muted)
     selected.TextXAlignment = Enum.TextXAlignment.Right
     selected.TextTruncate = Enum.TextTruncate.AtEnd
     c.hit = hit(f, "Header", UDim2.new(), UDim2.new(1, 0, 0, 42))
@@ -1773,7 +1893,11 @@ function Group:AddDropdown(config)
         ClipsDescendants = true,
         Visible = false,
     }, f)
-    make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) }, optionsFrame)
+    make(
+        "UIListLayout",
+        { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) },
+        optionsFrame
+    )
     local entries = {}
     local function paint()
         selected.Text = c.value or opt(config, "Placeholder", "Select...")
@@ -1787,7 +1911,9 @@ function Group:AddDropdown(config)
         return self.value
     end
     function c:SetOpen(value)
-        if self.destroyed then return end
+        if self.destroyed then
+            return
+        end
         self.open = value == true and self.enabled and #self.options > 0
         self.openToken = (self.openToken or 0) + 1
         local token = self.openToken
@@ -1798,53 +1924,81 @@ function Group:AddDropdown(config)
         animate(w, optionsFrame, { Size = UDim2.new(1, -20, 0, math.max(0, height - 5)) }, 0.2)
         animate(w, self.icon, { Rotation = self.open and 180 or 0 }, 0.2)
         task.delay(0.21, function()
-            if not self.destroyed and token == self.openToken and not self.open then optionsFrame.Visible = false end
+            if not self.destroyed and token == self.openToken and not self.open then
+                optionsFrame.Visible = false
+            end
         end)
     end
     function c:Set(value, silent)
-        if self.destroyed then return end
+        if self.destroyed then
+            return
+        end
         assert(value == nil or entries[value], "Dropdown value is not in Options")
         local changed = self.value ~= value
         self.value = value
         self.frame:SetAttribute("Value", value)
         paint()
-        if changed and not silent then call(w, self.callback, value) end
+        if changed and not silent then
+            call(w, self.callback, value)
+        end
     end
     function c:SetOptions(values, silent)
-        if self.destroyed then return end
+        if self.destroyed then
+            return
+        end
         assert(type(values) == "table", "Options must be an array of strings")
         local nextValues, unique = {}, {}
         for _, value in ipairs(values) do
-            assert(type(value) == "string" and not unique[value], "Dropdown options must be unique strings")
+            assert(
+                type(value) == "string" and not unique[value],
+                "Dropdown options must be unique strings"
+            )
             unique[value] = true
             table.insert(nextValues, value)
         end
-        for _, connection in ipairs(self.optionConnections) do connection:Disconnect() end
+        for _, connection in ipairs(self.optionConnections) do
+            connection:Disconnect()
+        end
         table.clear(self.optionConnections)
-        for _, entry in pairs(entries) do entry.button:Destroy() end
+        for _, entry in pairs(entries) do
+            entry.button:Destroy()
+        end
         table.clear(entries)
         self.options = nextValues
         for index, value in ipairs(nextValues) do
-            local button = hit(optionsFrame, "Option" .. index, UDim2.new(), UDim2.new(1, -4, 0, 30))
+            local button =
+                hit(optionsFrame, "Option" .. index, UDim2.new(), UDim2.new(1, -4, 0, 30))
             button.LayoutOrder = index
             button.BackgroundColor3 = Color3.fromRGB(40, 42, 47)
             round(button, 4)
-            local title = label(button, "Label", value, 13, UDim2.fromOffset(28, 0), UDim2.new(1, -36, 1, 0))
+            local title =
+                label(button, "Label", value, 13, UDim2.fromOffset(28, 0), UDim2.new(1, -36, 1, 0))
             title.TextTruncate = Enum.TextTruncate.AtEnd
             local icon = addIcon(button, 86469743635172, UDim2.new(0, 12, 0.5, 0), 14)
             icon.AnchorPoint = Vector2.new(0.5, 0.5)
             entries[value] = { button = button, label = title, icon = icon }
-            table.insert(self.optionConnections, button.Activated:Connect(function()
-                if not self.enabled then return end
-                self:Set(value)
-                self:SetOpen(false)
-            end))
-            table.insert(self.optionConnections, button.MouseEnter:Connect(function()
-                animate(w, button, { BackgroundTransparency = 0.35 }, 0.12)
-            end))
-            table.insert(self.optionConnections, button.MouseLeave:Connect(function()
-                animate(w, button, { BackgroundTransparency = 1 }, 0.12)
-            end))
+            table.insert(
+                self.optionConnections,
+                button.Activated:Connect(function()
+                    if not self.enabled then
+                        return
+                    end
+                    self:Set(value)
+                    self:SetOpen(false)
+                end)
+            )
+            table.insert(
+                self.optionConnections,
+                button.MouseEnter:Connect(function()
+                    animate(w, button, { BackgroundTransparency = 0.35 }, 0.12)
+                end)
+            )
+            table.insert(
+                self.optionConnections,
+                button.MouseLeave:Connect(function()
+                    animate(w, button, { BackgroundTransparency = 1 }, 0.12)
+                end)
+            )
         end
         local value = unique[self.value] and self.value or nil
         self:Set(value, silent)
@@ -1853,29 +2007,56 @@ function Group:AddDropdown(config)
     local setEnabled = c.SetEnabled
     function c:SetEnabled(value)
         setEnabled(self, value)
-        if self.destroyed then return end
+        if self.destroyed then
+            return
+        end
         selected.TextTransparency = self.enabled and 0 or 0.55
         self.icon.ImageTransparency = self.enabled and 0 or 0.55
-        if not self.enabled then self:SetOpen(false) end
+        if not self.enabled then
+            self:SetOpen(false)
+        end
     end
     local destroy = c.Destroy
     function c:Destroy()
-        for _, connection in ipairs(self.optionConnections) do connection:Disconnect() end
+        for _, connection in ipairs(self.optionConnections) do
+            connection:Disconnect()
+        end
         table.clear(self.optionConnections)
         destroy(self)
     end
-    listen(c, c.hit.Activated, function() if c.enabled then c:SetOpen(not c.open) end end)
+    listen(c, c.hit.Activated, function()
+        if c.enabled then
+            c:SetOpen(not c.open)
+        end
+    end)
     listen(c, UIS.InputBegan, function(input)
-        if not c.open then return end
-        if input.KeyCode == Enum.KeyCode.Escape then c:SetOpen(false) return end
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if not c.open then
+            return
+        end
+        if input.KeyCode == Enum.KeyCode.Escape then
+            c:SetOpen(false)
+            return
+        end
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
             local p, size = f.AbsolutePosition, f.AbsoluteSize
             local point = input.Position
-            if point.X < p.X or point.Y < p.Y or point.X > p.X + size.X or point.Y > p.Y + size.Y then c:SetOpen(false) end
+            if
+                point.X < p.X
+                or point.Y < p.Y
+                or point.X > p.X + size.X
+                or point.Y > p.Y + size.Y
+            then
+                c:SetOpen(false)
+            end
         end
     end)
     listen(c, self.tab.page:GetPropertyChangedSignal("Visible"), function()
-        if not self.tab.page.Visible then c:SetOpen(false) end
+        if not self.tab.page.Visible then
+            c:SetOpen(false)
+        end
     end)
     c:SetOptions(opt(config, "Options", {}), true)
     c:Set(opt(config, "Value", c.options[1]), true)
@@ -2013,7 +2194,7 @@ function Group:AddButton(config)
         UDim2.fromOffset(13, 0),
         UDim2.new(1, -26, 1, 0)
     )
-    local iconName = opt(config, "Icon", nil)
+    local iconName = opt(config, "Icon", 125304603079291)
     if iconName then
         local iconSize = math.clamp(opt(config, "IconSize", 20), 12, 28)
         c.icon = addIcon(c.hit, iconName, UDim2.new(0, 9, 0.5, -iconSize / 2), iconSize)
@@ -2095,20 +2276,37 @@ function Group:AddButton(config)
 end
 
 function Group:AddText(config)
-    if type(config) == "string" then config = { Text = config } end
+    if type(config) == "string" then
+        config = { Text = config }
+    end
     config = config or {}
     local f = row(self, "Text", 36)
     local c = control(self, f, config)
-    c.label = label(f, "Text", opt(config, "Text", opt(config, "Name", "")), opt(config, "TextSize", 14), UDim2.fromOffset(41, 8), UDim2.new(1, -54, 1, -16), opt(config, "Color", C.Muted))
+    c.label = label(
+        f,
+        "Text",
+        opt(config, "Text", opt(config, "Name", "")),
+        opt(config, "TextSize", 14),
+        UDim2.fromOffset(41, 8),
+        UDim2.new(1, -54, 1, -16),
+        opt(config, "Color", C.Muted)
+    )
     c.label.TextWrapped = true
     c.icon = addIcon(f, opt(config, "Icon", 73498261973195), UDim2.new(0, 23, 0.5, 0), 20)
     c.icon.AnchorPoint = Vector2.new(0.5, 0.5)
     c.icon:SetAttribute("FixedColor", true)
     local function resize()
-        if c.destroyed then return end
+        if c.destroyed then
+            return
+        end
         local scale = math.max(c.window.scale.Scale, 0.001)
         local width = math.max(1, c.label.AbsoluteSize.X / scale)
-        local bounds = game:GetService("TextService"):GetTextSize(c.label.Text, c.label.TextSize, c.label.Font, Vector2.new(width, 100000))
+        local bounds = game:GetService("TextService"):GetTextSize(
+            c.label.Text,
+            c.label.TextSize,
+            c.label.Font,
+            Vector2.new(width, 100000)
+        )
         f.Size = UDim2.new(1, 0, 0, math.max(opt(config, "MinHeight", 36), bounds.Y + 16))
     end
     local function style()
@@ -2119,7 +2317,9 @@ function Group:AddText(config)
         return self.label.Text
     end
     function c:SetText(value)
-        if self.destroyed then return end
+        if self.destroyed then
+            return
+        end
         self.label.Text = tostring(value)
         resize()
     end
