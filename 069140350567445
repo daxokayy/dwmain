@@ -2318,7 +2318,7 @@ local function runDeveloperPanel(gui, options)
                 else
                     sessions.Subtitle.Text = response.error or "Connection lost · retrying"
                 end
-                task.wait(5)
+                task.wait(2)
             end
         end)
     end
@@ -2362,7 +2362,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.0.0" }
+local Library = { Version = "2.1.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
