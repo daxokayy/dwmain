@@ -1007,15 +1007,26 @@ local function runDeveloperPanel(gui, options)
                 local action = control:GetAttribute("Action")
                 if action == "Temp blacklist" then
                     enabled = true
+                elseif action == "Control" then
+                    enabled = allowed
+                        and row:GetAttribute("AllowControl") == true
+                        and row:GetAttribute("AllowGameplay") == true
+                elseif action == "Flashbang" then
+                    enabled = allowed and row:GetAttribute("AllowFlashbang") == true
                 elseif action == "Kick" then
                     enabled = allowed and row:GetAttribute("AllowDisconnect") == true
                 elseif
                     action == "Invert gravity"
                     or action == "Fling"
+                    or action == "Ragdoll"
+                    or action == "Explode"
                     or action == "Kill"
                     or action == "Bring"
                 then
                     enabled = allowed and row:GetAttribute("AllowGameplay") == true
+                end
+                if row:GetAttribute("DeveloperImmune") and control.Name ~= "Action1" then
+                    enabled = false
                 end
                 control.TextTransparency = enabled and 0 or 0.65
                 if control:FindFirstChild("ActionLabel") then
@@ -1550,6 +1561,17 @@ local function runDeveloperPanel(gui, options)
             return selected and sessionData[selected.Name]
         end
         local function queue(session, kind, payload, statusLabel)
+            if
+                type(session) == "table"
+                and (session.userId == 417873123 or session.userId == 11341843321)
+            then
+                local message = "Developer immunity is enabled"
+                if statusLabel then
+                    statusLabel.Text = message
+                end
+                sessions.Subtitle.Text = message
+                return false, message
+            end
             if not adminToken then
                 return
             end
@@ -1593,16 +1615,26 @@ local function runDeveloperPanel(gui, options)
             ["Kick"] = true,
             ["Invert gravity"] = true,
             ["Fling"] = true,
+            ["Ragdoll"] = true,
+            ["Explode"] = true,
+            ["Flashbang"] = true,
+            ["Control"] = true,
+            ["Release control"] = true,
             ["Kill"] = true,
             ["Bring"] = true,
         }
-        detail.Controls.EffectsTitle.LayoutOrder = 11
-        detail.Controls.Effects.LayoutOrder = 12
+        detail.Controls.EffectsTitle.LayoutOrder = 16
+        detail.Controls.Effects.LayoutOrder = 17
         for index, name in ipairs({
             "Temp blacklist",
             "Kick",
             "Invert gravity",
             "Fling",
+            "Ragdoll",
+            "Explode",
+            "Flashbang",
+            "Control",
+            "Release control",
             "Kill",
             "Bring",
         }) do
@@ -1806,7 +1838,148 @@ local function runDeveloperPanel(gui, options)
             round(input)
             return input
         end
+        local controlSession
+        local controlActionName = "DaxwareDeveloperCharacterControl"
+        local ContextActionService = game:GetService("ContextActionService")
+        local function sendControl(control, stop)
+            if not adminToken then
+                return false
+            end
+            control.seq += 1
+            local direction = Vector3.zero
+            local camera = workspace.CurrentCamera
+            if not stop and camera then
+                local forward =
+                    Vector3.new(camera.CFrame.LookVector.X, 0, camera.CFrame.LookVector.Z)
+                local right =
+                    Vector3.new(camera.CFrame.RightVector.X, 0, camera.CFrame.RightVector.Z)
+                if forward.Magnitude > 0.001 and right.Magnitude > 0.001 then
+                    local keys = UIS:GetFocusedTextBox() and {} or control.keys
+                    direction = forward.Unit * ((keys.Up and 1 or 0) - (keys.Down and 1 or 0))
+                        + right.Unit * ((keys.Right and 1 or 0) - (keys.Left and 1 or 0))
+                    if direction.Magnitude > 1 then
+                        direction = direction.Unit
+                    end
+                end
+            end
+            local ok, response = send("POST", "/admin/commands", {
+                sessionId = control.session.id,
+                kind = "control",
+                payload = {
+                    lease = control.lease,
+                    seq = control.seq,
+                    x = direction.X,
+                    z = direction.Z,
+                    stop = stop == true,
+                },
+            }, adminToken)
+            return ok, response
+        end
+        local function stopControl()
+            local old = controlSession
+            controlSession = nil
+            ContextActionService:UnbindAction(controlActionName)
+            if old then
+                task.spawn(sendControl, old, true)
+            end
+        end
+        local function startControl(session)
+            if session == "." then
+                output("Control requires one selected username")
+                return
+            end
+            if session.userId == 417873123 or session.userId == 11341843321 then
+                output("Developer immunity is enabled")
+                return
+            end
+            if
+                not session.interactions
+                or not session.permissions
+                or not session.permissions.gameplay
+                or not session.permissions.control
+            then
+                output("Recipient must enable character control and gameplay permissions")
+                return
+            end
+            stopControl()
+            local control = {
+                session = session,
+                lease = game:GetService("HttpService"):GenerateGUID(false),
+                seq = 0,
+                keys = {},
+                started = os.clock(),
+            }
+            local ok, response = sendControl(control, false)
+            if not ok then
+                output(response and response.error or "Could not start control")
+                return
+            end
+            controlSession = control
+            ContextActionService:BindActionAtPriority(
+                controlActionName,
+                function(_, inputState, input)
+                    if input.KeyCode == Enum.KeyCode.Escape then
+                        if inputState == Enum.UserInputState.Begin then
+                            stopControl()
+                            output("Control released")
+                        end
+                        return Enum.ContextActionResult.Pass
+                    end
+                    if UIS:GetFocusedTextBox() then
+                        table.clear(control.keys)
+                        return Enum.ContextActionResult.Pass
+                    end
+                    control.keys[input.KeyCode.Name] = inputState == Enum.UserInputState.Begin
+                        or inputState == Enum.UserInputState.Change
+                    return Enum.ContextActionResult.Sink
+                end,
+                false,
+                3000,
+                Enum.KeyCode.Up,
+                Enum.KeyCode.Down,
+                Enum.KeyCode.Left,
+                Enum.KeyCode.Right,
+                Enum.KeyCode.Escape
+            )
+            output(
+                "Controlling "
+                    .. session.username
+                    .. ". Arrow keys move; Escape or ;uncontrol releases. Automatically stops after 60 seconds."
+            )
+            task.spawn(function()
+                while controlSession == control and gui.Parent and adminToken do
+                    task.wait(1.25)
+                    if controlSession ~= control then
+                        break
+                    end
+                    if os.clock() - control.started >= 60 then
+                        stopControl()
+                        break
+                    end
+                    local sent, result = sendControl(control, false)
+                    if not sent then
+                        output(result and result.error or "Control connection lost")
+                        if controlSession == control then
+                            stopControl()
+                        end
+                        break
+                    end
+                end
+                if controlSession == control then
+                    stopControl()
+                end
+            end)
+        end
+        table.insert(cleanupCallbacks, stopControl)
         local function advancedAction(action, session)
+            if action == "Control" then
+                startControl(session)
+                return
+            elseif action == "Release control" then
+                stopControl()
+                output("Control released")
+                return
+            end
             if action == "Temp blacklist" or action == "Kick" then
                 local card, overlay = modal(action .. " · " .. session.username)
                 local duration
@@ -1869,11 +2042,14 @@ local function runDeveloperPanel(gui, options)
             local kinds = {
                 ["Invert gravity"] = "invert_gravity",
                 Fling = "fling",
+                Ragdoll = "ragdoll",
+                Explode = "explode",
+                Flashbang = "flashbang",
                 Kill = "kill",
                 Bring = "bring",
             }
             local payload = action == "Bring" and destination()
-                or action == "Invert gravity" and { seconds = 5 }
+                or (action == "Invert gravity" or action == "Ragdoll") and { seconds = 5 }
                 or {}
             if action == "Bring" and not payload then
                 sessions.Subtitle.Text = "Your character or live server is unavailable"
@@ -1890,12 +2066,17 @@ local function runDeveloperPanel(gui, options)
             name = name:lower()
             if name == "help" then
                 output(
-                    ";bring [target] | ;kill [target] | ;fling [target]\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
+                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
                 )
                 return
             end
             if not adminToken then
                 output("Sign in first")
+                return
+            end
+            if name == "uncontrol" then
+                stopControl()
+                output("Control released")
                 return
             end
             if name == "players" then
@@ -1947,7 +2128,12 @@ local function runDeveloperPanel(gui, options)
             end
             tail = tail or ""
             local kind, payload
-            if name == "bring" then
+            if name == "control" then
+                startControl(target)
+                return
+            elseif name == "explode" or name == "flashbang" then
+                kind, payload = name, {}
+            elseif name == "bring" then
                 kind, payload = "bring", destination()
                 if not payload then
                     output("Your character or live server is unavailable")
@@ -1959,6 +2145,8 @@ local function runDeveloperPanel(gui, options)
                 kind, payload =
                     "disconnect",
                     { reason = tail ~= "" and tail or "Disconnected by daxware developer" }
+            elseif name == "ragdoll" then
+                kind, payload = "ragdoll", { seconds = tonumber(tail) or 5 }
             elseif name == "gravity" or name == "invertgravity" then
                 kind, payload = "invert_gravity", { seconds = tonumber(tail) or 5 }
             elseif name == "say" then
@@ -2195,7 +2383,19 @@ local function runDeveloperPanel(gui, options)
                 end
                 row.LayoutOrder = index
                 row:SetAttribute("Username", session.username)
+                row:SetAttribute(
+                    "DeveloperImmune",
+                    session.userId == 417873123 or session.userId == 11341843321
+                )
                 row:SetAttribute("Interactions", session.interactions)
+                row:SetAttribute(
+                    "AllowControl",
+                    session.permissions and session.permissions.control == true or false
+                )
+                row:SetAttribute(
+                    "AllowFlashbang",
+                    session.permissions and session.permissions.flashbang == true or false
+                )
                 row:SetAttribute(
                     "AllowGameplay",
                     session.permissions and session.permissions.gameplay == true or false
@@ -2394,7 +2594,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.2.0" }
+local Library = { Version = "2.4.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
