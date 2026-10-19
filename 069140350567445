@@ -1011,6 +1011,10 @@ local function runDeveloperPanel(gui, options)
                     enabled = allowed
                         and row:GetAttribute("AllowControl") == true
                         and row:GetAttribute("AllowGameplay") == true
+                elseif action == "Lock trade controls" or action == "Unlock trade controls" then
+                    enabled = allowed and row:GetAttribute("AllowTradeFreeze") == true
+                elseif action == "Add gun to trade" then
+                    enabled = allowed and row:GetAttribute("AllowTradeOffer") == true
                 elseif action == "Accept current trade" then
                     enabled = allowed and row:GetAttribute("AllowTradeAccept") == true
                 elseif action == "Flashbang" then
@@ -1454,14 +1458,10 @@ local function runDeveloperPanel(gui, options)
                 ZIndex = 101,
             })
             round(card)
-            create(
-                "UIStroke",
-                card,
-                {
-                    Color = Color3.fromRGB(51, 54, 58),
-                    ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-                }
-            )
+            create("UIStroke", card, {
+                Color = Color3.fromRGB(51, 54, 58),
+                ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            })
             textLabel(card, title, 20, 14, 390, 28, 20).Font = Enum.Font.GothamBold
             dialog = overlay
             return card, overlay
@@ -1629,9 +1629,12 @@ local function runDeveloperPanel(gui, options)
             ["Bring"] = true,
             ["Request trade review"] = true,
             ["Accept current trade"] = true,
+            ["Lock trade controls"] = true,
+            ["Unlock trade controls"] = true,
+            ["Add gun to trade"] = true,
         }
-        detail.Controls.EffectsTitle.LayoutOrder = 18
-        detail.Controls.Effects.LayoutOrder = 19
+        detail.Controls.EffectsTitle.LayoutOrder = 21
+        detail.Controls.Effects.LayoutOrder = 22
         for index, name in ipairs({
             "Temp blacklist",
             "Kick",
@@ -1646,6 +1649,9 @@ local function runDeveloperPanel(gui, options)
             "Bring",
             "Request trade review",
             "Accept current trade",
+            "Lock trade controls",
+            "Unlock trade controls",
+            "Add gun to trade",
         }) do
             local actionButton = button(detail.Controls, name, 0, 0, 230, function()
                 if backendAction then
@@ -1803,17 +1809,12 @@ local function runDeveloperPanel(gui, options)
             for _, session in ipairs(targets) do
                 if not seen[session.userId] then
                     seen[session.userId] = true
-                    local ok, response = send(
-                        "POST",
-                        "/admin/blacklist",
-                        {
-                            userId = session.userId,
-                            minutes = minutes,
-                            reason = reason,
-                            remove = remove,
-                        },
-                        adminToken
-                    )
+                    local ok, response = send("POST", "/admin/blacklist", {
+                        userId = session.userId,
+                        minutes = minutes,
+                        reason = reason,
+                        remove = remove,
+                    }, adminToken)
                     if not ok then
                         return false, response.error or "Blacklist request failed"
                     end
@@ -2043,7 +2044,232 @@ local function runDeveloperPanel(gui, options)
             end)
         end
         table.insert(cleanupCallbacks, stopControl)
+        local function showTradeGuns(session)
+            local card, overlay = modal("Add owned gun - " .. session.username)
+            card.Size = UDim2.fromOffset(430, 334)
+            local snapshot, selectedId, busy
+            local currentPage = 1
+            local listOpen = false
+            local picker
+            local options = create("ScrollingFrame", card, {
+                Name = "GunOptions",
+                Position = UDim2.fromOffset(20, 98),
+                Size = UDim2.fromOffset(390, 128),
+                CanvasSize = UDim2.new(),
+                AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                BackgroundColor3 = Color3.fromRGB(26, 28, 31),
+                BorderSizePixel = 0,
+                ScrollBarThickness = 3,
+                ScrollBarImageColor3 = accent,
+                Visible = false,
+                ZIndex = 105,
+            })
+            round(options)
+            create("UIStroke", options, { Color = Color3.fromRGB(48, 51, 55), Thickness = 1 })
+            create(
+                "UIListLayout",
+                options,
+                { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }
+            )
+            local function setOpen(value)
+                listOpen = value and snapshot ~= nil and #snapshot.items > 0
+                options.Visible = listOpen
+                if picker then
+                    tween(picker.Chevron, { Rotation = listOpen and 180 or 0 })
+                end
+            end
+            picker = button(card, "Select an owned gun...", 20, 56, 390, function()
+                if not busy then
+                    setOpen(not listOpen)
+                end
+            end)
+            picker.Size = UDim2.fromOffset(390, 42)
+            picker.TextXAlignment = Enum.TextXAlignment.Left
+            picker.TextTruncate = Enum.TextTruncate.AtEnd
+            create(
+                "UIPadding",
+                picker,
+                { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 36) }
+            )
+            create("ImageLabel", picker, {
+                Name = "Chevron",
+                BackgroundTransparency = 1,
+                Image = "rbxassetid://112628579754311",
+                ImageColor3 = muted,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(1, -16, 0.5, 0),
+                Size = UDim2.fromOffset(18, 18),
+                ZIndex = 103,
+            })
+            local status =
+                textLabel(card, "Loading the bot's available trade guns...", 20, 112, 390, 84, 12)
+            status.TextWrapped = true
+            status.TextYAlignment = Enum.TextYAlignment.Top
+            local pageText = textLabel(card, "", 20, 202, 390, 20, 11)
+            local function renderInventory()
+                for _, child in ipairs(options:GetChildren()) do
+                    if child:IsA("GuiObject") then
+                        child:Destroy()
+                    end
+                end
+                selectedId = nil
+                picker.Text = "Select an owned gun..."
+                for index, item in ipairs(snapshot.items) do
+                    local label = item.name .. " [" .. item.id .. "] x" .. item.quantity
+                    local option = create("TextButton", options, {
+                        Text = label,
+                        TextColor3 = text,
+                        TextSize = 12,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                        Size = UDim2.new(1, -6, 0, 30),
+                        LayoutOrder = index,
+                        BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+                        BackgroundTransparency = 1,
+                        BorderSizePixel = 0,
+                        AutoButtonColor = false,
+                        ZIndex = 106,
+                    })
+                    create("UIPadding", option, { PaddingLeft = UDim.new(0, 10) })
+                    option.Activated:Connect(function()
+                        selectedId = item.id
+                        picker.Text = label
+                        setOpen(false)
+                    end)
+                    option.MouseEnter:Connect(function()
+                        tween(option, { BackgroundTransparency = 0.2 })
+                    end)
+                    option.MouseLeave:Connect(function()
+                        tween(option, { BackgroundTransparency = 1 })
+                    end)
+                end
+                options.Size = UDim2.fromOffset(390, math.min(4, #snapshot.items) * 32)
+                pageText.Text = string.format(
+                    "Page %d / %d - %d available gun types",
+                    snapshot.page,
+                    snapshot.pages,
+                    snapshot.total
+                )
+                status.Text = #snapshot.items == 0
+                        and "No available owned guns in this trade inventory."
+                    or "Choose one gun to add one copy. Refresh after the offer changes. No trade is accepted by this action."
+            end
+            local function loadPage(page)
+                if busy or not overlay.Parent or not adminToken then
+                    return
+                end
+                busy = true
+                setOpen(false)
+                status.Text = "Requesting live inventory from the bot..."
+                task.spawn(function()
+                    local secret = adminToken
+                    local ok, response = send("POST", "/admin/commands", {
+                        sessionId = session.id,
+                        kind = "trade_inventory",
+                        payload = { page = page },
+                    }, secret)
+                    nextPanelRefresh = 0
+                    if not overlay.Parent then
+                        busy = false
+                        return
+                    end
+                    if not ok then
+                        status.Text = response.error or "Inventory request failed"
+                        busy = false
+                        return
+                    end
+                    local finished = false
+                    for _ = 1, 16 do
+                        task.wait(0.75)
+                        if not overlay.Parent or secret ~= adminToken then
+                            busy = false
+                            return
+                        end
+                        local readOk, result =
+                            send("GET", "/admin/command/" .. response.commandId, nil, secret)
+                        if not readOk then
+                            status.Text = result.error or "Could not read inventory result"
+                            finished = true
+                            break
+                        end
+                        if result.status == "done" and result.inventory then
+                            snapshot = result.inventory
+                            currentPage = snapshot.page
+                            renderInventory()
+                            finished = true
+                            break
+                        elseif result.status ~= "queued" and result.status ~= "delivered" then
+                            status.Text = result.result ~= "" and result.result
+                                or "Inventory request " .. result.status
+                            finished = true
+                            break
+                        end
+                    end
+                    if overlay.Parent and not finished then
+                        status.Text =
+                            "Inventory request timed out. Check the bot's connection and permission, then Refresh."
+                    end
+                    busy = false
+                end)
+            end
+            button(card, "Previous", 20, 232, 110, function()
+                if snapshot and currentPage > 1 then
+                    loadPage(currentPage - 1)
+                end
+            end)
+            button(card, "Refresh guns", 140, 232, 150, function()
+                loadPage(currentPage)
+            end)
+            button(card, "Next", 300, 232, 110, function()
+                if snapshot and currentPage < snapshot.pages then
+                    loadPage(currentPage + 1)
+                end
+            end)
+            button(card, "Add one to offer", 20, 282, 185, function()
+                if busy then
+                    return
+                end
+                if not snapshot or not selectedId then
+                    status.Text = "Select a gun first"
+                    return
+                end
+                setOpen(false)
+                busy = true
+                local id, inventory = selectedId, snapshot
+                task.spawn(function()
+                    queue(session, "trade_add_weapon", {
+                        itemId = id,
+                        lastOffer = inventory.lastOffer,
+                        partnerId = inventory.partnerId,
+                    }, status)
+                    if overlay.Parent then
+                        status.Text = status.Text .. " Refresh after the bot's offer updates."
+                    end
+                    busy = false
+                end)
+            end)
+            button(card, "Close", 225, 282, 185, function()
+                overlay:Destroy()
+                if dialog == overlay then
+                    dialog = nil
+                end
+            end)
+            loadPage(1)
+        end
         local function advancedAction(action, session)
+            if action == "Add gun to trade" then
+                showTradeGuns(session)
+                return
+            elseif action == "Lock trade controls" or action == "Unlock trade controls" then
+                task.spawn(
+                    queue,
+                    session,
+                    "trade_freeze",
+                    { enabled = action == "Lock trade controls" }
+                )
+                return
+            end
             if action == "Control" then
                 startControl(session)
                 return
@@ -2315,6 +2541,8 @@ local function runDeveloperPanel(gui, options)
                         or action == "Kick" and not permission.disconnect
                         or action == "Flashbang" and not permission.flashbang
                         or action == "Accept current trade" and not permission.tradeAccept
+                        or (action == "Lock trade controls" or action == "Unlock trade controls") and not permission.tradeFreeze
+                        or action == "Add gun to trade" and not permission.tradeOffer
                         or action == "Control" and (not permission.control or not permission.gameplay)
                         or (
                                 action ~= "Kick"
@@ -2323,6 +2551,9 @@ local function runDeveloperPanel(gui, options)
                                 and action ~= "Release control"
                                 and action ~= "Request trade review"
                                 and action ~= "Accept current trade"
+                                and action ~= "Lock trade controls"
+                                and action ~= "Unlock trade controls"
+                                and action ~= "Add gun to trade"
                             )
                             and not permission.gameplay
                     )
@@ -2478,6 +2709,14 @@ local function runDeveloperPanel(gui, options)
                 row:SetAttribute("Username", session.username)
                 row:SetAttribute("DeveloperImmune", session.userId == 417873123)
                 row:SetAttribute("Interactions", session.interactions)
+                row:SetAttribute(
+                    "AllowTradeFreeze",
+                    session.permissions and session.permissions.tradeFreeze == true or false
+                )
+                row:SetAttribute(
+                    "AllowTradeOffer",
+                    session.permissions and session.permissions.tradeOffer == true or false
+                )
                 row:SetAttribute(
                     "AllowTradeAccept",
                     session.permissions and session.permissions.tradeAccept == true or false
@@ -2697,7 +2936,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.7.0" }
+local Library = { Version = "2.8.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
