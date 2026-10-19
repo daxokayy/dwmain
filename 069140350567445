@@ -1354,6 +1354,10 @@ local function runDeveloperPanel(gui, options)
                 gui:GetAttribute("BackendUrl") or "https://daxware-backend.daxokayy.workers.dev"
             )
         local adminToken
+        local nextPanelRefresh = 0
+        connect(gui:GetAttributeChangedSignal("PanelVisible"), function()
+            nextPanelRefresh = 0
+        end)
         local sessionData = {}
         local rows = {}
         local template = list.PixelPilot:Clone()
@@ -1537,6 +1541,7 @@ local function runDeveloperPanel(gui, options)
                         return
                     end
                     adminToken = response.token
+                    nextPanelRefresh = 0
                     overlay:Destroy()
                     login, dialog = nil, nil
                     sessions.Subtitle.Text = "Connecting to backend..."
@@ -1588,6 +1593,7 @@ local function runDeveloperPanel(gui, options)
                 requestData = { sessionId = session.id, kind = kind, payload = payload or {} }
             end
             local ok, response, code = send("POST", "/admin/commands", requestData, secret)
+            nextPanelRefresh = 0
             if not gui.Parent or secret ~= adminToken then
                 return
             end
@@ -2599,6 +2605,10 @@ local function runDeveloperPanel(gui, options)
         showLogin()
         task.spawn(function()
             while gui.Parent do
+                task.wait(0.25)
+                if os.clock() < nextPanelRefresh then
+                    continue
+                end
                 if not adminToken then
                     task.wait(0.5)
                     continue
@@ -2638,7 +2648,12 @@ local function runDeveloperPanel(gui, options)
                 else
                     sessions.Subtitle.Text = response.error or "Connection lost · retrying"
                 end
-                task.wait(2)
+                nextPanelRefresh = os.clock()
+                    + (
+                        (not panelVisible or minimized) and 30
+                        or content.Activity.Visible and 2
+                        or 5
+                    )
             end
         end)
     end
@@ -2682,7 +2697,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.6.1" }
+local Library = { Version = "2.7.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
