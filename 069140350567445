@@ -1622,9 +1622,10 @@ local function runDeveloperPanel(gui, options)
             ["Release control"] = true,
             ["Kill"] = true,
             ["Bring"] = true,
+            ["Request trade review"] = true,
         }
-        detail.Controls.EffectsTitle.LayoutOrder = 16
-        detail.Controls.Effects.LayoutOrder = 17
+        detail.Controls.EffectsTitle.LayoutOrder = 17
+        detail.Controls.Effects.LayoutOrder = 18
         for index, name in ipairs({
             "Temp blacklist",
             "Kick",
@@ -1637,6 +1638,7 @@ local function runDeveloperPanel(gui, options)
             "Release control",
             "Kill",
             "Bring",
+            "Request trade review",
         }) do
             local actionButton = button(detail.Controls, name, 0, 0, 230, function()
                 if backendAction then
@@ -1880,6 +1882,26 @@ local function runDeveloperPanel(gui, options)
             controlSession = nil
             ContextActionService:UnbindAction(controlActionName)
             if old then
+                if old.cameraConnection then
+                    old.cameraConnection:Disconnect()
+                end
+                if old.savedCamera then
+                    local saved = old.savedCamera
+                    local camera = workspace.CurrentCamera
+                    if camera then
+                        local subject = saved.subject
+                        if not subject or not subject.Parent then
+                            local character = Players.LocalPlayer.Character
+                            subject = character and character:FindFirstChildOfClass("Humanoid")
+                        end
+                        if subject then
+                            camera.CameraSubject = subject
+                        end
+                        camera.CameraType = saved.cameraType
+                        camera.CFrame = saved.cframe
+                        camera.Focus = saved.focus
+                    end
+                end
                 task.spawn(sendControl, old, true)
             end
         end
@@ -1914,7 +1936,50 @@ local function runDeveloperPanel(gui, options)
                 output(response and response.error or "Could not start control")
                 return
             end
+            if not gui.Parent or not adminToken then
+                task.spawn(sendControl, control, true)
+                return
+            end
             controlSession = control
+            local target = Players:GetPlayerByUserId(session.userId)
+            local character = target and target.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local camera = workspace.CurrentCamera
+            if target and humanoid and humanoid.Health > 0 and camera then
+                control.savedCamera = {
+                    subject = camera.CameraSubject,
+                    cameraType = camera.CameraType,
+                    cframe = camera.CFrame,
+                    focus = camera.Focus,
+                }
+                camera.CameraType = Enum.CameraType.Custom
+                camera.CameraSubject = humanoid
+                control.cameraConnection = game:GetService("RunService").Heartbeat
+                    :Connect(function()
+                        if controlSession ~= control then
+                            return
+                        end
+                        if
+                            target.Parent ~= Players
+                            or target.Character ~= character
+                            or not humanoid.Parent
+                            or humanoid.Health <= 0
+                        then
+                            stopControl()
+                            output("Control released: target character unavailable")
+                            return
+                        end
+                        local currentCamera = workspace.CurrentCamera
+                        if currentCamera then
+                            currentCamera.CameraType = Enum.CameraType.Custom
+                            currentCamera.CameraSubject = humanoid
+                        end
+                    end)
+            else
+                output(
+                    "Camera follow unavailable: recipient must be in your server with a living character"
+                )
+            end
             ContextActionService:BindActionAtPriority(
                 controlActionName,
                 function(_, inputState, input)
@@ -2045,6 +2110,7 @@ local function runDeveloperPanel(gui, options)
                 Ragdoll = "ragdoll",
                 Explode = "explode",
                 Flashbang = "flashbang",
+                ["Request trade review"] = "trade_review",
                 Kill = "kill",
                 Bring = "bring",
             }
@@ -2066,7 +2132,7 @@ local function runDeveloperPanel(gui, options)
             name = name:lower()
             if name == "help" then
                 output(
-                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
+                    ";bring [target] | ;kill [target] | ;fling [target] | ;ragdoll [target] [seconds]\n;explode [target] | ;flashbang [target] | ;control <target> | ;uncontrol | ;tradereview [target]\n;kick [target] [reason] | ;gravity [target] [1-15 seconds]\n;blacklist [target] [minutes] [reason] | ;unblacklist <userId>\n;say [target] <message> | ;blacklists | ;players\nTarget: exact username, . for this server, or omitted for selected session. Only shared server locations can match ."
                 )
                 return
             end
@@ -2131,6 +2197,8 @@ local function runDeveloperPanel(gui, options)
             if name == "control" then
                 startControl(target)
                 return
+            elseif name == "tradereview" then
+                kind, payload = "trade_review", {}
             elseif name == "explode" or name == "flashbang" then
                 kind, payload = name, {}
             elseif name == "bring" then
@@ -2231,7 +2299,16 @@ local function runDeveloperPanel(gui, options)
                     and (
                         not session.interactions
                         or action == "Kick" and not permission.disconnect
-                        or action ~= "Kick" and not permission.gameplay
+                        or action == "Flashbang" and not permission.flashbang
+                        or action == "Control" and (not permission.control or not permission.gameplay)
+                        or (
+                                action ~= "Kick"
+                                and action ~= "Flashbang"
+                                and action ~= "Control"
+                                and action ~= "Release control"
+                                and action ~= "Request trade review"
+                            )
+                            and not permission.gameplay
                     )
                 then
                     sessions.Subtitle.Text = "Required permission is disabled on this session"
@@ -2594,7 +2671,7 @@ local function runDeveloperPanel(gui, options)
     }
 end
 
-local Library = { Version = "2.4.0" }
+local Library = { Version = "2.5.0" }
 function Library:CreateWindow(options)
     options = options or {}
     local url = options.BackendUrl or "https://daxware-backend.daxokayy.workers.dev"
