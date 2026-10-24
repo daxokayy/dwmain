@@ -588,52 +588,6 @@ local function installSettings(ctx)
             hex.Text = "#" .. ctx.accent():ToHex():upper()
         end
     end)
-    local kittenCard = card("KittenMode", 64, 4)
-    text(kittenCard, "Label", "Kitten Mode", UDim2.fromOffset(13, 6), 14)
-    local kittenDescription = text(
-        kittenCard,
-        "Description",
-        "Tiny ears, soft colors, extra purrsonality.",
-        UDim2.fromOffset(13, 30),
-        11
-    )
-    kittenDescription.TextColor3 = Color3.fromRGB(171, 173, 182)
-    local kittenSwitch = create("TextButton", {
-        Name = "Toggle",
-        Text = "",
-        AutoButtonColor = false,
-        Position = UDim2.new(1, -47, 0, 17),
-        Size = UDim2.fromOffset(32, 19),
-        BackgroundColor3 = C.Track,
-        BorderSizePixel = 0,
-    }, kittenCard)
-    create("UICorner", { CornerRadius = UDim.new(1, 0) }, kittenSwitch)
-    local kittenKnob = create("Frame", {
-        Name = "Knob",
-        Size = UDim2.fromOffset(13, 14),
-        BackgroundColor3 = Color3.fromRGB(249, 232, 235),
-        BorderSizePixel = 0,
-        Position = UDim2.fromOffset(3, 3),
-    }, kittenSwitch)
-    kittenSwitch:SetAttribute("Value", ctx.kitten())
-    kittenKnob:SetAttribute("ToggleKnob", true)
-    kittenKnob:SetAttribute("FixedColor", true)
-    create("UICorner", { CornerRadius = UDim.new(1, 0) }, kittenKnob)
-    local function paintKitten()
-        local enabled = ctx.kitten()
-        kittenSwitch:SetAttribute("Value", enabled)
-        ctx.tween(kittenSwitch, { BackgroundColor3 = enabled and ctx.accent() or C.Track }, 0.18)
-        ctx.tween(kittenKnob, {
-            Position = UDim2.fromOffset(enabled and 17 or 3, 3),
-            BackgroundColor3 = toggleKnobColor(ctx.accent(), enabled),
-        }, 0.18)
-    end
-    ctx.connect(kittenSwitch.Activated, function()
-        ctx.setKitten(not ctx.kitten())
-    end)
-    ctx.connect(ctx.root:GetAttributeChangedSignal("SettingsRevision"), paintKitten)
-    paintKitten()
-
     local scaleCard = card("UIScale", 90, 3)
     text(scaleCard, "Label", "UI scale", UDim2.fromOffset(14, 8), 14)
     local percent = text(scaleCard, "Value", "100%", UDim2.new(1, -84, 0, 8), 14)
@@ -1089,12 +1043,6 @@ function UI:CreateWindow(config)
         scale = function()
             return opt(config, "Scale", 1)
         end,
-        kitten = function()
-            return w.kittenMode == true
-        end,
-        setKitten = function(value)
-            w:SetKittenMode(value)
-        end,
         setKey = function(key)
             w:SetToggleKey(key)
         end,
@@ -1127,191 +1075,7 @@ function UI:CreateWindow(config)
             animate(w, settingsState[w].page, { Position = UDim2.new() }, 0.2)
         end
     end)
-    w:SetKittenMode(opt(config, "KittenMode", false))
     return w
-end
-
-function Window:_PaintKittenObject(object)
-    if not object.Parent then
-        return
-    end
-    local originals = self.kittenOriginals
-    if object:IsA("UICorner") then
-        local parent = object.Parent
-        if not parent:IsA("GuiObject") or parent.Size.Y.Offset < 30 then
-            return
-        end
-        if not originals[object] then
-            originals[object] = { CornerRadius = object.CornerRadius }
-        end
-        local original = originals[object].CornerRadius
-        object.CornerRadius = self.kittenMode
-                and UDim.new(original.Scale, math.max(original.Offset, 10))
-            or original
-    elseif object:IsA("GuiObject") and object.BackgroundTransparency < 1 then
-        local original = originals[object] and originals[object].BackgroundColor3
-            or object.BackgroundColor3
-        if math.max(original.R, original.G, original.B) > 0.22 then
-            return
-        end
-        if not originals[object] then
-            originals[object] = { BackgroundColor3 = original }
-        end
-        animate(
-            self,
-            object,
-            { BackgroundColor3 = self.kittenMode and original:Lerp(self.accent, 0.075) or original },
-            0.2
-        )
-    end
-end
-
-function Window:SetKittenMode(enabled)
-    assert(type(enabled) == "boolean", "KittenMode must be a boolean")
-    if self.destroyed then
-        return
-    end
-    self.kittenMode = enabled
-    self.config.KittenMode = enabled
-    if not self.kittenDecor then
-        self.kittenOriginals = setmetatable({}, { __mode = "k" })
-        local decor = make("CanvasGroup", {
-            Name = "KittenEars",
-            BackgroundTransparency = 1,
-            BorderSizePixel = 0,
-            Visible = false,
-            GroupTransparency = 1,
-            ZIndex = 1,
-            Active = false,
-        }, self.gui)
-        self.root.ZIndex = 2
-        local scale = make("UIScale", { Scale = self.scale.Scale }, decor)
-        self.kittenDecor = decor
-        self.kittenEarParts = {}
-        for _, side in ipairs({ 0, 1 }) do
-            local ear = make("Frame", {
-                Name = side == 0 and "LeftEar" or "RightEar",
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Rotation = 45,
-                Position = UDim2.new(side, side == 0 and 40 or -40, 0, 31),
-                Size = UDim2.fromOffset(38, 38),
-                BackgroundColor3 = C.Background,
-                BorderSizePixel = 0,
-            }, decor)
-            round(ear, 5)
-            local stroke = border(ear)
-            stroke.Color = self.accent
-            local inner = make("Frame", {
-                Name = "InnerEar",
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.fromScale(0.5, 0.5),
-                Size = UDim2.fromOffset(23, 23),
-                BackgroundColor3 = self.accent,
-                BorderSizePixel = 0,
-            }, ear)
-            round(inner, 4)
-            local tilt = make("UIScale", { Scale = 1 }, ear)
-            table.insert(
-                self.kittenEarParts,
-                { outer = ear, inner = inner, stroke = stroke, scale = tilt }
-            )
-        end
-        local face = make("Frame", {
-            Name = "KittenFace",
-            BackgroundTransparency = 1,
-            Visible = false,
-            Position = UDim2.new(1, -204, 0, 11),
-            Size = UDim2.fromOffset(68, 32),
-        }, self.header)
-        local expression = label(
-            face,
-            "Expression",
-            "=^.^=",
-            18,
-            UDim2.new(),
-            UDim2.fromScale(1, 1),
-            self.accent,
-            true
-        )
-        expression.TextXAlignment = Enum.TextXAlignment.Center
-        self.kittenFace, self.kittenExpression = face, expression
-        local paw = make("ImageLabel", {
-            Name = "KittenPaw",
-            BackgroundTransparency = 1,
-            Visible = false,
-            Position = UDim2.new(0, 13, 0.5, -9),
-            Size = UDim2.fromOffset(18, 18),
-            Image = "rbxassetid://127191168011319",
-            ImageColor3 = self.accent,
-            ScaleType = Enum.ScaleType.Fit,
-        }, self.footer)
-        self.kittenPaw = paw
-        local function sync()
-            local position = self.root.Position
-            decor.Position = UDim2.new(
-                position.X.Scale,
-                position.X.Offset,
-                position.Y.Scale,
-                position.Y.Offset - 32 * self.scale.Scale
-            )
-            decor.Size = UDim2.new(
-                self.root.Size.X.Scale,
-                self.root.Size.X.Offset,
-                self.root.Size.Y.Scale,
-                self.root.Size.Y.Offset + 32
-            )
-            scale.Scale = self.scale.Scale
-            decor.GroupTransparency = self.root.GroupTransparency
-            decor.Visible = self.kittenMode and self.root.Visible
-        end
-        self.syncKitten = sync
-        for _, property in ipairs({ "Position", "Size", "Visible", "GroupTransparency" }) do
-            listen(self, self.root:GetPropertyChangedSignal(property), sync)
-        end
-        listen(self, self.scale:GetPropertyChangedSignal("Scale"), sync)
-        listen(self, self.root.DescendantAdded, function(object)
-            if self.kittenMode then
-                task.defer(function()
-                    if not self.destroyed and self.kittenMode then
-                        self:_PaintKittenObject(object)
-                    end
-                end)
-            end
-        end)
-        listen(self, self.header.MouseEnter, function()
-            if not self.kittenMode then
-                return
-            end
-            expression.Text = "=^w^="
-            for _, ear in ipairs(self.kittenEarParts) do
-                animate(self, ear.scale, { Scale = 1.08 }, 0.18, Enum.EasingStyle.Back)
-            end
-        end)
-        listen(self, self.header.MouseLeave, function()
-            expression.Text = "=^.^="
-            for _, ear in ipairs(self.kittenEarParts) do
-                animate(self, ear.scale, { Scale = 1 }, 0.2)
-            end
-        end)
-    end
-    self.kittenFace.Visible, self.kittenPaw.Visible = enabled, enabled
-    self.footer.StatusDot.Visible = not enabled
-    for _, ear in ipairs(self.kittenEarParts) do
-        ear.outer.BackgroundColor3 = C.Background:Lerp(self.accent, 0.075)
-        ear.inner.BackgroundColor3 = self.accent:Lerp(Color3.new(1, 1, 1), 0.3)
-        ear.stroke.Color = self.accent
-    end
-    self.kittenExpression.TextColor3 = self.accent
-    self.kittenPaw.ImageColor3 = self.accent
-    self:_PaintKittenObject(self.root)
-    for _, object in ipairs(self.root:GetDescendants()) do
-        self:_PaintKittenObject(object)
-    end
-    self.syncKitten()
-    self.root:SetAttribute(
-        "SettingsRevision",
-        (self.root:GetAttribute("SettingsRevision") or 0) + 1
-    )
 end
 
 function Window:SetAccent(color)
@@ -1367,9 +1131,6 @@ function Window:SetAccent(color)
             }, 0.18)
         end
     end
-    if self.kittenDecor then
-        self:SetKittenMode(self.kittenMode)
-    end
 end
 
 function Window:SetScale(value)
@@ -1395,16 +1156,12 @@ function Window:GetSettings()
         Accent = self.accent:ToHex(),
         Scale = opt(self.config, "Scale", 1),
         ToggleKey = self.toggleKey.Name,
-        KittenMode = self.kittenMode == true,
     }
 end
 
 function Window:ApplySettings(data)
     if type(data) ~= "table" then
         return false, "Settings must be a table"
-    end
-    if data.KittenMode ~= nil and type(data.KittenMode) ~= "boolean" then
-        return false, "Invalid kitten mode"
     end
     local accent, scale, key
     if data.Accent ~= nil then
@@ -1443,9 +1200,6 @@ function Window:ApplySettings(data)
     end
     if key then
         self:SetToggleKey(key)
-    end
-    if data.KittenMode ~= nil then
-        self:SetKittenMode(data.KittenMode)
     end
     return true
 end
