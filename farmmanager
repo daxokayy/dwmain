@@ -1,0 +1,4705 @@
+-- Daxware MM2 Farm Manager v1.4.1
+-- Configure these two values after deploying the included Cloudflare Worker.
+local WORKER_URL = "https://daxware-mm2-farm-manager.daxokayy.workers.dev"
+local FARM_KEY = "2uFKylxNWl5A&GcEo%~VgO+,8t1|c4(5"
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local player = Players.LocalPlayer
+local environment = (type(getgenv) == "function" and getgenv()) or _G
+local stateKey = "__daxwareFarmManager"
+local previous = environment[stateKey]
+if type(previous) == "table" and type(previous.restore) == "function" then previous.restore() end
+local state = {
+    active = true, connections = {}, reports = {}, lastSync = 0,
+    selectedHosts = {}, roundKnown = false, roundStamp = nil,
+    resetRound = nil, sequence = 0, session = HttpService:GenerateGUID(false),
+}
+environment[stateKey] = state
+local settings = { autoFarm = false, resetHosts = false, antiAFK = false,
+    hostKillAll = false, hostShootMurderer = false, avoidInfection = false }
+local roleCache, deadCache = {}, {}
+local roleEventConnection, connectedRoleEvent
+local usesRoleEvent = game.GameId == 93017634738276 or game.PlaceId == 93017634738276
+local window
+function state.restore()
+    if not state.active then return end
+    state.active = false
+    if state.SetAntiAFK then state.SetAntiAFK(false) end
+    if state.sheriffShot then state.sheriffShot.Cancel() end
+    if state.knifeAction then state.knifeAction.Cancel(); state.knifeAction = nil end
+    if state.hostWeaponHooks then state.hostWeaponHooks.Restore() end
+    if state.ReleaseClaim then state.ReleaseClaim(true) end
+    if state.CloseSocket then state.CloseSocket("Unloaded") end
+    if state.farm then state.farm.Stop() end
+    if roleEventConnection then roleEventConnection:Disconnect() end
+    for _, connection in ipairs(state.connections) do connection:Disconnect() end
+    table.clear(state.connections)
+    if window and not window.destroyed then window:Destroy() end
+    if environment[stateKey] == state then environment[stateKey] = nil end
+end
+
+function state.HandleEmergencyKick(message)
+    if not state.active or state.emergencyKick then return false end
+    if type(message) ~= "table" or message.type ~= "emergency_kick"
+        or type(message.commandId) ~= "string" or #message.commandId < 1 or #message.commandId > 80 then return false end
+    state.emergencyKick = message.commandId
+    settings.autoFarm = false
+    task.defer(function()
+        pcall(state.restore)
+        player:Kick("Farm Manager emergency shutdown.")
+    end)
+    return true
+end
+
+function state.SetAntiAFK(enabled)
+    enabled = enabled == true and state.active
+    settings.antiAFK = enabled
+    if not enabled then
+        if state.antiAFKConnection then
+            state.antiAFKConnection:Disconnect()
+            state.antiAFKConnection = nil
+        end
+        for _, connection in ipairs(state.pausedIdleConnections or {}) do
+            pcall(function() connection:Enable() end)
+        end
+        state.pausedIdleConnections = nil
+        state.antiAFKFailed = nil
+        return
+    end
+    if state.antiAFKConnection then return end
+    state.pausedIdleConnections = {}
+    if type(getconnections) == "function" then
+        local ok, connections = pcall(getconnections, player.Idled)
+        if ok and type(connections) == "table" then
+            for _, connection in ipairs(connections) do
+                -- Only pause known-enabled handlers, so cleanup preserves their prior state.
+                local paused = false
+                pcall(function()
+                    if connection.Enabled == true and type(connection.Disable) == "function"
+                        and type(connection.Enable) == "function" then
+                        connection:Disable()
+                        paused = true
+                    end
+                end)
+                if paused then table.insert(state.pausedIdleConnections, connection) end
+            end
+        end
+    end
+    state.antiAFKConnection = player.Idled:Connect(function()
+        if not state.active or not settings.antiAFK then return end
+        local input
+        local inputOK = pcall(function()
+            input = Instance.new("VirtualInputManager")
+            input:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+        end)
+        local releaseOK = false
+        if input then
+            releaseOK = pcall(function()
+                input:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+            end)
+            pcall(function() input:Destroy() end)
+        end
+        local ok = inputOK and releaseOK
+        if not ok then
+            ok = pcall(function()
+                local virtualUser = game:GetService("VirtualUser")
+                virtualUser:CaptureController()
+                virtualUser:ClickButton2(Vector2.zero)
+            end)
+        end
+        if not ok and not state.antiAFKFailed then
+            state.antiAFKFailed = true
+            if state.OnAntiAFKError then state.OnAntiAFKError() end
+        elseif ok then
+            state.antiAFKFailed = nil
+        end
+    end)
+end
+
+local function loadBundledUI()
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ContentProvider = game:GetService("ContentProvider")
+local UI = {}
+local Window, Tab, Group, Preview = {}, {}, {}, {}
+local settingsState = setmetatable({}, { __mode = "k" })
+Window.__index = Window
+Tab.__index = Tab
+Group.__index = Group
+Preview.__index = Preview
+local C = {
+    Background = Color3.fromRGB(18, 20, 22),
+    Card = Color3.fromRGB(22, 24, 26),
+    Border = Color3.fromRGB(48, 51, 55),
+    Text = Color3.fromRGB(242, 242, 244),
+    Muted = Color3.fromRGB(171, 173, 182),
+    Subtle = Color3.fromRGB(122, 126, 137),
+    Accent = Color3.fromRGB(247, 125, 149),
+    Track = Color3.fromRGB(64, 66, 73),
+}
+local roleColors = {
+    Murderer = Color3.fromRGB(255, 75, 75),
+    Sheriff = Color3.fromRGB(80, 155, 255),
+    Innocent = Color3.fromRGB(90, 230, 120),
+    Hero = Color3.fromRGB(80, 210, 255),
+}
+
+local function opt(c, key, fallback)
+    local value = c[key]
+    if value == nil then
+        value = c[key:sub(1, 1):lower() .. key:sub(2)]
+    end
+    if value == nil then
+        return fallback
+    end
+    return value
+end
+
+local function make(class, props, parent)
+    local v = Instance.new(class)
+    for k, x in pairs(props) do
+        v[k] = x
+    end
+    v.Parent = parent
+    return v
+end
+
+local function round(v, n)
+    make("UICorner", {
+        CornerRadius = UDim.new(0, n or 6),
+    }, v)
+end
+
+local function border(v, color, width)
+    return make("UIStroke", {
+        Color = color or C.Border,
+        Thickness = width or 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, v)
+end
+
+local function label(parent, name, text, size, position, dimensions, color, bold)
+    return make("TextLabel", {
+        Name = name,
+        Text = text,
+        TextSize = size,
+        Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+        TextColor3 = color or C.Text,
+        BackgroundTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Position = position or UDim2.new(),
+        Size = dimensions or UDim2.fromScale(1, 1),
+    }, parent)
+end
+
+local function hit(parent, name, position, size)
+    return make("TextButton", {
+        Name = name,
+        Text = "",
+        AutoButtonColor = false,
+        BackgroundTransparency = 1,
+        Position = position or UDim2.new(),
+        Size = size or UDim2.fromScale(1, 1),
+    }, parent)
+end
+
+local function asset(id)
+    id = tostring(id)
+    return id:match("^%d+$") and "rbxassetid://" .. id or id
+end
+
+local iconOffsets = {
+    swords = Vector2.new(4, 4),
+    crosshair = Vector2.new(36, 4),
+    wrench = Vector2.new(68, 4),
+    settings = Vector2.new(100, 4),
+    user = Vector2.new(4, 36),
+    house = Vector2.new(36, 36),
+    eye = Vector2.new(68, 36),
+    minus = Vector2.new(100, 36),
+    x = Vector2.new(4, 68),
+}
+
+local function addIcon(parent, name, position, size)
+    local value = tostring(name)
+    if string.lower(value) == "coins" or value:match("%d+") == "96614676664859" then
+        value = "117532411052616"
+    end
+    if value:match("%d+") == "73498261973195" then
+        value = "139501903412663"
+    end
+    if value:match("%d+") == "136481847167022" then
+        value = "112628579754311"
+    end
+    local offset = iconOffsets[string.lower(value)]
+    if value:match("%d+") == "86469743635172" then
+        value = "103189582822867"
+    end
+    local standaloneImage = value:match("%d+") == "125304603079291"
+            and "rbxassetid://98729914829489"
+        or asset(value)
+    assert(
+        offset or value:match("^%d+$") or value:match("^rbxassetid://%d+$"),
+        "Unknown icon: " .. value
+    )
+    return make("ImageLabel", {
+        Name = "Icon",
+        BackgroundTransparency = 1,
+        Image = offset and "rbxassetid://134425129651297" or standaloneImage,
+        ImageRectOffset = offset or Vector2.zero,
+        ImageRectSize = offset and Vector2.new(24, 24) or Vector2.zero,
+        ImageColor3 = C.Muted,
+        Size = UDim2.fromOffset(size or 16, size or 16),
+        Position = position,
+        ZIndex = parent.ZIndex,
+    }, parent)
+end
+
+local function side(value)
+    value = string.lower(value or "left")
+    assert(value == "left" or value == "right", "Side must be left or right")
+    return value
+end
+
+local function listen(owner, signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(owner.connections, c)
+    return c
+end
+
+local function disconnect(owner)
+    for _, c in ipairs(owner.connections) do
+        c:Disconnect()
+    end
+    table.clear(owner.connections)
+end
+
+local function toggleKnobColor(accent, enabled)
+    local brightness = accent.R * 0.2126 + accent.G * 0.7152 + accent.B * 0.0722
+    if enabled and brightness > 0.72 then
+        return Color3.fromRGB(48, 51, 58)
+    end
+    return Color3.fromRGB(249, 232, 235)
+end
+
+local function styleBrand(title, accent, connect)
+    if not title or title.Text:gsub("<.->", ""):lower() ~= "daxware" then
+        return nil
+    end
+    title.RichText = true
+    local color = title:FindFirstChild("BrandAccent") or Instance.new("Color3Value")
+    color.Name = "BrandAccent"
+    color.Value = accent
+    color.Parent = title
+    local function redraw()
+        title.Text = 'dax<font color="#' .. color.Value:ToHex() .. '">ware</font>'
+    end
+    connect(color.Changed, redraw)
+    redraw()
+    return color
+end
+
+local function animateTopbar(button, icon, name, ctx)
+    if not button or not icon then
+        return
+    end
+    local size = icon.Size
+    local position = icon.Position
+    icon.Position = UDim2.new(
+        position.X.Scale,
+        position.X.Offset + size.X.Offset * (0.5 - icon.AnchorPoint.X),
+        position.Y.Scale,
+        position.Y.Offset + size.Y.Offset * (0.5 - icon.AnchorPoint.Y)
+    )
+    icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    local scale = Instance.new("UIScale")
+    scale.Name = "HoverScale"
+    scale.Parent = icon
+    local hovered = false
+    local token = 0
+    local function paint()
+        ctx.tween(scale, { Scale = hovered and 1.12 or 1 }, 0.16)
+        ctx.tween(icon, {
+            Rotation = hovered and (name == "settings" and 35 or name == "close" and 90 or 0) or 0,
+            ImageColor3 = hovered and ctx.accent() or Color3.fromRGB(171, 173, 182),
+        }, 0.18)
+    end
+    ctx.connect(button.MouseEnter, function()
+        hovered = true
+        paint()
+    end)
+    ctx.connect(button.MouseLeave, function()
+        hovered = false
+        paint()
+    end)
+    ctx.connect(button.InputBegan, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            token += 1
+            local current = token
+            ctx.tween(scale, { Scale = 0.88 }, 0.08)
+            task.delay(0.1, function()
+                if icon.Parent and current == token then
+                    paint()
+                end
+            end)
+        end
+    end)
+end
+
+local function themeProperties(object)
+    local properties = {}
+    if object:IsA("GuiObject") then
+        properties = { "BackgroundColor3" }
+        if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+            table.insert(properties, "TextColor3")
+        end
+        if object:IsA("ImageLabel") or object:IsA("ImageButton") then
+            table.insert(properties, "ImageColor3")
+        end
+        if object:IsA("ScrollingFrame") then
+            table.insert(properties, "ScrollBarImageColor3")
+        end
+    elseif object:IsA("UIStroke") then
+        properties = { "Color" }
+    end
+    return properties
+end
+
+local function fixedColor(object)
+    return object:FindFirstAncestor("Swatches") ~= nil or object:GetAttribute("FixedColor") == true
+end
+
+local function captureAccent(bindings, seen, root, color)
+    for _, object in ipairs(root:GetDescendants()) do
+        if not seen[object] then
+            seen[object] = true
+            if not fixedColor(object) then
+                for _, property in ipairs(themeProperties(object)) do
+                    if object[property] == color then
+                        bindings[object] = bindings[object] or {}
+                        bindings[object][property] = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function trackAccent(bindings, object, property, value, color)
+    if typeof(value) ~= "Color3" or fixedColor(object) then
+        return
+    end
+    local properties = bindings[object]
+    if value == color then
+        if not properties then
+            properties = {}
+            bindings[object] = properties
+        end
+        properties[property] = true
+    elseif properties then
+        properties[property] = nil
+    end
+end
+
+local function animate(w, object, props, duration, style, direction)
+    if w.destroyed or not object.Parent then
+        return
+    end
+    local channels = w.tweens[object]
+    if not channels then
+        channels = {}
+        w.tweens[object] = channels
+    end
+    for property, value in pairs(props) do
+        trackAccent(w.accentBindings, object, property, value, w.accent)
+        if channels[property] then
+            channels[property]:Cancel()
+        end
+        local t = TweenService:Create(
+            object,
+            TweenInfo.new(
+                duration or 0.16,
+                style or Enum.EasingStyle.Quad,
+                direction or Enum.EasingDirection.Out
+            ),
+            {
+                [property] = value,
+            }
+        )
+        channels[property] = t
+        t:Play()
+    end
+end
+
+local function cancel(w, object)
+    local channels = w.tweens[object]
+    if channels then
+        for _, t in pairs(channels) do
+            t:Cancel()
+        end
+    end
+    w.tweens[object] = nil
+end
+
+local function call(w, callback, value)
+    if callback and not w.destroyed then
+        task.spawn(function()
+            local ok, err = pcall(callback, value)
+            if not ok then
+                warn("[daxware] Callback:", err)
+            end
+        end)
+    end
+end
+
+local function elementSide(self, value)
+    if self.destroyed then
+        return
+    end
+    self.side = side(value)
+    self.frame.Parent = self.tab.columns[self.side]
+    if self.tab._Arrange then
+        self.tab:_Arrange()
+    end
+end
+
+local function installSettings(ctx)
+    local function create(class, props, parent)
+        local object = Instance.new(class)
+        for key, value in pairs(props) do
+            object[key] = value
+        end
+        object.Parent = parent
+        return object
+    end
+    local function text(parent, name, value, position, size, bold)
+        return create("TextLabel", {
+            Name = name,
+            Text = value,
+            Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+            TextSize = size or 14,
+            TextColor3 = Color3.fromRGB(242, 242, 244),
+            BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Position = position,
+            Size = UDim2.new(1, -28, 0, 28),
+        }, parent)
+    end
+    local function corner(object)
+        create("UICorner", { CornerRadius = UDim.new(0, 6) }, object)
+    end
+    local existing = ctx.body:FindFirstChild("SettingsPage")
+    if existing then
+        existing:Destroy()
+    end
+    local page = create("Frame", {
+        Name = "SettingsPage",
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+    }, ctx.body)
+    local heading = text(page, "Title", "Settings", UDim2.fromOffset(19, 17), 26, true)
+    local headingWidth = game:GetService("TextService")
+        :GetTextSize("Settings", 26, Enum.Font.GothamBold, Vector2.new(10000, 100)).X
+    create("ImageLabel", {
+        Name = "Icon",
+        BackgroundTransparency = 1,
+        Image = "rbxassetid://134425129651297",
+        ImageRectOffset = Vector2.new(68, 4),
+        ImageRectSize = Vector2.new(24, 24),
+        ImageColor3 = Color3.fromRGB(171, 173, 182),
+        Position = UDim2.new(0, headingWidth + 8, 0.5, -11),
+        Size = UDim2.fromOffset(22, 22),
+    }, heading)
+    local description = text(page, "Description", "Customize daxware", UDim2.fromOffset(19, 46), 14)
+    description.TextColor3 = Color3.fromRGB(122, 126, 137)
+    local scroll = create("ScrollingFrame", {
+        Name = "Controls",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(15, 78),
+        Size = UDim2.new(1, -30, 1, -86),
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = ctx.accent(),
+    }, page)
+    create(
+        "UIListLayout",
+        { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder },
+        scroll
+    )
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 4),
+        PaddingRight = UDim.new(0, 4),
+        PaddingTop = UDim.new(0, 4),
+        PaddingBottom = UDim.new(0, 4),
+    }, scroll)
+    local function card(name, height, order)
+        local frame = create("CanvasGroup", {
+            Name = name,
+            Size = UDim2.new(1, -2, 0, height),
+            BackgroundColor3 = Color3.fromRGB(22, 24, 26),
+            BorderSizePixel = 0,
+            LayoutOrder = order,
+        }, scroll)
+        corner(frame)
+        local outline = create("Frame", {
+            Name = "InsetBorder",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(1, 1),
+            Size = UDim2.new(1, -2, 1, -2),
+        }, frame)
+        corner(outline)
+        create("UIStroke", {
+            Color = Color3.fromRGB(48, 51, 55),
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        }, outline)
+        return frame
+    end
+    local function button(parent, name, value, pos, size)
+        local b = create("TextButton", {
+            Name = name,
+            Text = value,
+            Font = Enum.Font.Gotham,
+            TextSize = 13,
+            TextColor3 = Color3.fromRGB(242, 242, 244),
+            BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Position = pos,
+            Size = size,
+        }, parent)
+        corner(b)
+        ctx.connect(b.MouseEnter, function()
+            ctx.tween(b, { BackgroundColor3 = Color3.fromRGB(49, 51, 57) }, 0.13)
+        end)
+        ctx.connect(b.MouseLeave, function()
+            ctx.tween(b, { BackgroundColor3 = Color3.fromRGB(37, 39, 43) }, 0.13)
+        end)
+        return b
+    end
+    local keyCard = card("Keybind", 58, 1)
+    text(keyCard, "Label", "Toggle keybind", UDim2.fromOffset(14, 15), 14)
+    local keyButton = button(
+        keyCard,
+        "Capture",
+        ctx.key().Name,
+        UDim2.new(1, -164, 0, 12),
+        UDim2.fromOffset(150, 34)
+    )
+    ctx.connect(keyButton.Activated, function()
+        if ctx.root:GetAttribute("CapturingKey") then
+            ctx.root:SetAttribute("CapturingKey", false)
+            keyButton.Text = ctx.key().Name
+            return
+        end
+        ctx.root:SetAttribute("CapturingKey", true)
+        keyButton.Text = "Press a key..."
+    end)
+    ctx.connect(game:GetService("UserInputService").InputBegan, function(input)
+        if
+            not ctx.root:GetAttribute("CapturingKey")
+            or input.UserInputType ~= Enum.UserInputType.Keyboard
+        then
+            return
+        end
+        if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+            ctx.setKey(input.KeyCode)
+        end
+        keyButton.Text = ctx.key().Name
+        task.defer(function()
+            if ctx.root.Parent then
+                ctx.root:SetAttribute("CapturingKey", false)
+            end
+        end)
+    end)
+    local colorCard = card("AccentColor", 94, 2)
+    text(colorCard, "Label", "Accent color", UDim2.fromOffset(14, 8), 14)
+    local hex = create("TextBox", {
+        Name = "Hex",
+        Text = "#" .. ctx.accent():ToHex():upper(),
+        PlaceholderText = "#F77D95",
+        ClearTextOnFocus = false,
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextColor3 = Color3.fromRGB(242, 242, 244),
+        BackgroundColor3 = Color3.fromRGB(37, 39, 43),
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -124, 0, 10),
+        Size = UDim2.fromOffset(110, 30),
+    }, colorCard)
+    corner(hex)
+    local swatches = create("Frame", {
+        Name = "Swatches",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(14, 51),
+        Size = UDim2.new(1, -28, 0, 28),
+    }, colorCard)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, swatches)
+    local selections = {}
+    local function applyColor(color)
+        for swatch, stroke in pairs(selections) do
+            ctx.tween(
+                stroke,
+                { Transparency = swatch.Name:lower() == color:ToHex():lower() and 0 or 1 },
+                0.15
+            )
+        end
+        ctx.setAccent(color)
+        hex.Text = "#" .. color:ToHex():upper()
+        scroll.ScrollBarImageColor3 = color
+    end
+    for index, value in ipairs({ "F77D95", "509BFF", "A78BFA", "59D7AC", "FFBA65", "E8E8ED" }) do
+        local color = Color3.fromHex(value)
+        local swatch = create("TextButton", {
+            Name = value,
+            Text = "",
+            BackgroundColor3 = color,
+            BorderSizePixel = 0,
+            Size = UDim2.fromOffset(28, 28),
+            LayoutOrder = index,
+            AutoButtonColor = false,
+        }, swatches)
+        corner(swatch)
+        local stroke = create("UIStroke", {
+            Color = Color3.fromRGB(242, 242, 244),
+            Thickness = 2,
+            Transparency = color == ctx.accent() and 0 or 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        }, swatch)
+        selections[swatch] = stroke
+        local hoverScale = create("UIScale", { Scale = 1 }, swatch)
+        ctx.connect(swatch.MouseEnter, function()
+            ctx.tween(hoverScale, { Scale = 1.12 }, 0.14)
+        end)
+        ctx.connect(swatch.MouseLeave, function()
+            ctx.tween(hoverScale, { Scale = 1 }, 0.14)
+        end)
+        ctx.connect(swatch.Activated, function()
+            applyColor(color)
+        end)
+    end
+    local hexStroke = create("UIStroke", {
+        Color = Color3.fromRGB(171, 173, 182),
+        Transparency = 1,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, hex)
+    ctx.connect(hex.Focused, function()
+        ctx.tween(hexStroke, { Transparency = 0.2 }, 0.16)
+    end)
+    ctx.connect(hex.FocusLost, function()
+        ctx.tween(hexStroke, { Transparency = 1 }, 0.16)
+        local value = hex.Text:gsub("#", "")
+        if value:match("^%x%x%x%x%x%x$") then
+            applyColor(Color3.fromHex(value))
+        else
+            hex.Text = "#" .. ctx.accent():ToHex():upper()
+        end
+    end)
+    local scaleCard = card("UIScale", 90, 3)
+    text(scaleCard, "Label", "UI scale", UDim2.fromOffset(14, 8), 14)
+    local percent = text(scaleCard, "Value", "100%", UDim2.new(1, -84, 0, 8), 14)
+    percent.Size = UDim2.fromOffset(70, 28)
+    percent.TextXAlignment = Enum.TextXAlignment.Right
+    local track = create("Frame", {
+        Name = "Track",
+        BackgroundColor3 = Color3.fromRGB(64, 66, 73),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(20, 58),
+        Size = UDim2.new(1, -40, 0, 4),
+    }, scaleCard)
+    corner(track)
+    local fill = create("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = ctx.accent(),
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0.5, 1),
+    }, track)
+    corner(fill)
+    local knob = create("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = ctx.accent(),
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(12, 12),
+        Position = UDim2.fromScale(0.5, 0.5),
+    }, track)
+    corner(knob)
+    local hit = create("TextButton", {
+        Name = "Hit",
+        Text = "",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(-8, -12),
+        Size = UDim2.new(1, 16, 0, 28),
+    }, track)
+    local function showScale(value)
+        local ratio = (value - 0.65) / 0.6
+        percent.Text = string.format("%d%%", math.round(value * 100))
+        ctx.tween(fill, { Size = UDim2.fromScale(ratio, 1) }, 0.1)
+        ctx.tween(knob, { Position = UDim2.fromScale(ratio, 0.5) }, 0.1)
+    end
+    ctx.connect(hit.MouseEnter, function()
+        ctx.tween(knob, { Size = UDim2.fromOffset(16, 16) }, 0.14)
+    end)
+    ctx.connect(hit.MouseLeave, function()
+        ctx.tween(knob, { Size = UDim2.fromOffset(12, 12) }, 0.14)
+    end)
+    showScale(ctx.scale())
+    local dragging
+    local function updateScale(input)
+        local ratio = math.clamp(
+            (input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1),
+            0,
+            1
+        )
+        local value = math.round((0.65 + ratio * 0.6) * 100) / 100
+        ctx.setScale(value)
+        showScale(value)
+    end
+    ctx.connect(hit.InputBegan, function(input)
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            dragging = input
+            updateScale(input)
+        end
+    end)
+    ctx.connect(game:GetService("UserInputService").InputChanged, function(input)
+        if
+            dragging
+            and (
+                input == dragging
+                or input.UserInputType == Enum.UserInputType.MouseMovement
+                    and dragging.UserInputType == Enum.UserInputType.MouseButton1
+            )
+        then
+            updateScale(input)
+        end
+    end)
+    ctx.connect(game:GetService("UserInputService").InputEnded, function(input)
+        if input == dragging then
+            dragging = nil
+        end
+    end)
+    ctx.connect(game:GetService("UserInputService").WindowFocusReleased, function()
+        dragging = nil
+    end)
+    local entranceToken = 0
+    ctx.connect(page:GetPropertyChangedSignal("Visible"), function()
+        entranceToken += 1
+        local token = entranceToken
+        if not page.Visible then
+            return
+        end
+        for _, card in ipairs(scroll:GetChildren()) do
+            if card:IsA("CanvasGroup") then
+                card.GroupTransparency = 1
+                task.delay((card.LayoutOrder - 1) * 0.045, function()
+                    if card.Parent and page.Visible and token == entranceToken then
+                        ctx.tween(card, { GroupTransparency = 0 }, 0.22)
+                    end
+                end)
+            end
+        end
+    end)
+    ctx.connect(ctx.root:GetAttributeChangedSignal("SettingsRevision"), function()
+        if not ctx.root:GetAttribute("CapturingKey") then
+            keyButton.Text = ctx.key().Name
+        end
+        hex.Text = "#" .. ctx.accent():ToHex():upper()
+        scroll.ScrollBarImageColor3 = ctx.accent()
+        showScale(ctx.scale())
+        for swatch, stroke in pairs(selections) do
+            ctx.tween(
+                stroke,
+                { Transparency = swatch.Name:lower() == ctx.accent():ToHex():lower() and 0 or 1 },
+                0.15
+            )
+        end
+    end)
+    return page
+end
+
+function UI:CreateWindow(config)
+    config = config or {}
+    local size = opt(config, "Size", Vector2.new(700, 499))
+    assert(
+        typeof(size) == "Vector2" and size.X >= 400 and size.Y >= 300,
+        "Size must be a Vector2 at least 400 x 300"
+    )
+    local w = setmetatable({
+        connections = {},
+        accentBindings = setmetatable({}, { __mode = "k" }),
+        accentSeen = setmetatable({}, { __mode = "k" }),
+        tweens = setmetatable({}, {
+            __mode = "k",
+        }),
+        ticks = {},
+        tabs = {},
+        destroyed = false,
+        unloaded = false,
+        accent = opt(config, "Accent", C.Accent),
+        size = size,
+        visible = true,
+        minimized = false,
+        ready = false,
+        token = 0,
+        toggleKey = opt(config, "ToggleKey", Enum.KeyCode.RightControl),
+        config = config,
+    }, Window)
+    settingsState[w] = {}
+    w.gui = make("ScreenGui", {
+        Name = opt(config, "Name", "daxwareUI"),
+        ResetOnSpawn = false,
+        DisplayOrder = opt(config, "DisplayOrder", 100),
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        IgnoreGuiInset = opt(config, "IgnoreGuiInset", true),
+    }, opt(config, "Parent", nil) or Players.LocalPlayer:WaitForChild("PlayerGui"))
+    w.root = make("CanvasGroup", {
+        Name = "Window",
+        BackgroundColor3 = C.Background,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0, 0),
+        Position = opt(config, "Position", UDim2.fromScale(0.5, 0.5)),
+        Size = UDim2.fromOffset(size.X, size.Y),
+        ClipsDescendants = true,
+        GroupColor3 = Color3.new(1, 1, 1),
+        GroupTransparency = 1,
+        Visible = false,
+    }, w.gui)
+    round(w.root, 8)
+    w.outline = border(w.root)
+    w.scale = make("UIScale", {
+        Scale = 1,
+    }, w.root)
+    w.header = make("Frame", {
+        Name = "Header",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 54),
+        Active = true,
+    }, w.root)
+    label(
+        w.header,
+        "Title",
+        opt(config, "Title", "daxware"),
+        25,
+        UDim2.fromOffset(18, 9),
+        UDim2.new(1, -120, 0, 37),
+        C.Text,
+        true
+    )
+    w.headerDivider = make("Frame", {
+        Name = "Divider",
+        BackgroundColor3 = C.Border,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 54),
+        Size = UDim2.new(1, 0, 0, 1),
+    }, w.header)
+    local mini = hit(w.header, "Minimize", UDim2.new(1, -78, 0, 15), UDim2.fromOffset(23, 26))
+    local close = hit(w.header, "Close", UDim2.new(1, -37, 0, 15), UDim2.fromOffset(23, 26))
+    settingsState[w].button =
+        hit(w.header, "Settings", UDim2.new(1, -126, 0, 11), UDim2.fromOffset(28, 32))
+    settingsState[w].icon =
+        addIcon(settingsState[w].button, "settings", UDim2.new(0.5, -11, 0.5, -11), 22)
+    addIcon(mini, "minus", UDim2.new(0.5, -11, 0.5, -11), 22)
+    addIcon(close, "x", UDim2.new(0.5, -11, 0.5, -11), 22)
+    w.nav = make("ScrollingFrame", {
+        Name = "Tabs",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(19, 54),
+        Size = UDim2.fromOffset(size.X - 38, 38),
+        ScrollBarThickness = 0,
+        ScrollingDirection = Enum.ScrollingDirection.X,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.X,
+    }, w.root)
+    make("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, w.nav)
+    make("Frame", {
+        Name = "NavigationDivider",
+        BackgroundColor3 = C.Border,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 91),
+        Size = UDim2.new(1, 0, 0, 1),
+    }, w.root)
+    w.body = make("Frame", {
+        Name = "Pages",
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+        Position = UDim2.fromOffset(0, 92),
+        Size = UDim2.fromOffset(size.X, size.Y - 127),
+    }, w.root)
+    w.footer = make("Frame", {
+        Name = "Footer",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, size.Y - 35),
+        Size = UDim2.fromOffset(size.X, 35),
+    }, w.root)
+    make("Frame", {
+        BackgroundColor3 = C.Border,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 1),
+    }, w.footer)
+    local dot = make("Frame", {
+        Name = "StatusDot",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 18, 0.5, 0),
+        Size = UDim2.fromOffset(9, 9),
+    }, w.footer)
+    round(dot, 9)
+    w.status = label(
+        w.footer,
+        "Status",
+        opt(config, "Status", "Active"),
+        13,
+        UDim2.fromOffset(35, -1),
+        UDim2.new(1, -140, 1, 0),
+        C.Muted
+    )
+    local version = label(
+        w.footer,
+        "Version",
+        opt(config, "Version", "v1.2"),
+        12,
+        UDim2.new(1, -110, 0, 0),
+        UDim2.new(0, 92, 1, 0),
+        C.Muted
+    )
+    version.TextXAlignment = Enum.TextXAlignment.Right
+    local function fit()
+        local viewport = w.gui.AbsoluteSize
+        w.fit = math.min(
+            opt(config, "Scale", 1),
+            math.max(0.1, (viewport.X - 24) / size.X),
+            math.max(0.1, (viewport.Y - 24) / size.Y)
+        )
+        if w.ready then
+            w.scale.Scale = w.fit * (w.visible and 1 or 0.96)
+        end
+        if w.positionGoal then
+            w.positionGoal = w:_ClampPosition(w.positionGoal)
+        end
+    end
+    w.refit = fit
+    listen(w, w.gui:GetPropertyChangedSignal("AbsoluteSize"), fit)
+    fit()
+    local center = w.root.Position
+    w.root.Position = UDim2.new(
+        center.X.Scale,
+        center.X.Offset - size.X * w.fit / 2,
+        center.Y.Scale,
+        center.Y.Offset - size.Y * w.fit / 2
+    )
+    local drag, start, initial
+    w.positionGoal = w:_ClampPosition(w.root.Position)
+    w.root.Position = w.positionGoal
+    listen(w, w.header.InputBegan, function(input)
+        if
+            w.ready
+            and w.visible
+            and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+            and input.Position.X < settingsState[w].button.AbsolutePosition.X
+        then
+            drag = input
+            start = input.Position
+            initial = w.positionGoal
+        end
+    end)
+    listen(w, UIS.InputChanged, function(input)
+        if
+            drag
+            and (
+                input == drag
+                or (
+                    drag.UserInputType == Enum.UserInputType.MouseButton1
+                    and input.UserInputType == Enum.UserInputType.MouseMovement
+                )
+            )
+        then
+            local d = input.Position - start
+            w.positionGoal = w:_ClampPosition(
+                UDim2.new(
+                    initial.X.Scale,
+                    initial.X.Offset + d.X,
+                    initial.Y.Scale,
+                    initial.Y.Offset + d.Y
+                )
+            )
+        end
+    end)
+    listen(w, UIS.InputEnded, function(input)
+        if input == drag then
+            drag = nil
+        end
+    end)
+    listen(w, UIS.WindowFocusReleased, function()
+        drag = nil
+    end)
+    listen(w, mini.Activated, function()
+        w:Minimize(not w.minimized)
+    end)
+    listen(w, close.Activated, function()
+        w:SetVisible(false)
+    end)
+    listen(w, UIS.InputBegan, function(input, processed)
+        if
+            w.ready
+            and not processed
+            and not UIS:GetFocusedTextBox()
+            and not w.root:GetAttribute("CapturingKey")
+            and input.KeyCode == w.toggleKey
+        then
+            w:SetVisible(not w.visible)
+        end
+    end)
+    for _, button in
+        {
+            mini,
+            close,
+        }
+    do
+        for _, glyph in button:GetChildren() do
+            if glyph:IsA("Frame") then
+                listen(w, button.MouseEnter, function()
+                    animate(w, glyph, {
+                        BackgroundColor3 = button == close and w.accent or C.Text,
+                    }, 0.12)
+                end)
+                listen(w, button.MouseLeave, function()
+                    animate(w, glyph, {
+                        BackgroundColor3 = C.Muted,
+                    }, 0.12)
+                end)
+            end
+        end
+    end
+    listen(w, RunService.RenderStepped, function(dt)
+        if not w.visible or w.destroyed then
+            return
+        end
+        local alpha = 1 - math.exp(-28 * math.min(dt, 0.1))
+        if w.root.Position ~= w.positionGoal then
+            local p = w.root.Position:Lerp(w.positionGoal, alpha)
+            if
+                math.abs(p.X.Offset - w.positionGoal.X.Offset)
+                    + math.abs(p.Y.Offset - w.positionGoal.Y.Offset)
+                < 0.1
+            then
+                p = w.positionGoal
+            end
+            w.root.Position = p
+        end
+        for _, tick in pairs(w.ticks) do
+            tick(alpha, dt)
+        end
+    end)
+    listen(w, w.gui.Destroying, function()
+        if not w.destroyed then
+            w:Destroy()
+        end
+    end)
+    task.defer(function()
+        if w.destroyed then
+            return
+        end
+        if opt(config, "Loading", true) then
+            w:_Load()
+        else
+            w.ready = true
+            w.root.Visible = true
+            w:SetVisible(true)
+        end
+    end)
+    w.brandAccent = styleBrand(w.header.Title, w.accent, function(signal, fn)
+        return listen(w, signal, fn)
+    end)
+    local topbarContext = {
+        connect = function(signal, fn)
+            return listen(w, signal, fn)
+        end,
+        tween = function(object, props, duration)
+            animate(w, object, props, duration)
+        end,
+        accent = function()
+            return w.accent
+        end,
+    }
+    animateTopbar(settingsState[w].button, settingsState[w].icon, "settings", topbarContext)
+    animateTopbar(mini, mini:FindFirstChild("Icon"), "minimize", topbarContext)
+    animateTopbar(close, close:FindFirstChild("Icon"), "close", topbarContext)
+    settingsState[w].page = installSettings({
+        root = w.root,
+        body = w.body,
+        connect = function(signal, callback)
+            return listen(w, signal, callback)
+        end,
+        tween = function(object, props, duration)
+            animate(w, object, props, duration)
+        end,
+        accent = function()
+            return w.accent
+        end,
+        key = function()
+            return w.toggleKey
+        end,
+        scale = function()
+            return opt(config, "Scale", 1)
+        end,
+        setKey = function(key)
+            w:SetToggleKey(key)
+        end,
+        setAccent = function(color)
+            w:SetAccent(color)
+        end,
+        setScale = function(value)
+            w:SetScale(value)
+        end,
+    })
+    listen(w, settingsState[w].button.Activated, function()
+        if w.minimized or not w.ready then
+            return
+        end
+        if settingsState[w].page.Visible then
+            settingsState[w].page.Visible = false
+            if settingsState[w].previous and not settingsState[w].previous.destroyed then
+                w:SelectTab(settingsState[w].previous)
+            end
+        else
+            settingsState[w].previous = w.selected
+            w.selected = nil
+            for _, tab in ipairs(w.tabs) do
+                tab.page.Visible = false
+                tab.underline.Visible = false
+                animate(w, tab.button, { TextColor3 = C.Muted }, 0.17)
+            end
+            settingsState[w].page.Visible = true
+            settingsState[w].page.Position = UDim2.fromOffset(8, 0)
+            animate(w, settingsState[w].page, { Position = UDim2.new() }, 0.2)
+        end
+    end)
+    return w
+end
+
+function Window:SetAccent(color)
+    assert(typeof(color) == "Color3", "Accent must be a Color3")
+    captureAccent(self.accentBindings, self.accentSeen, self.root, self.accent)
+    self.accent = color
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
+    if self.brandAccent then
+        animate(self, self.brandAccent, { Value = color }, 0.18)
+    end
+    for object, properties in pairs(self.accentBindings) do
+        if object.Parent and not fixedColor(object) then
+            local goals = {}
+            for property in pairs(properties) do
+                goals[property] = color
+            end
+            animate(self, object, goals, 0.18)
+        end
+    end
+    for _, tab in ipairs(self.tabs) do
+        if not tab.destroyed then
+            animate(self, tab.underline, { BackgroundColor3 = color }, 0.18)
+            if self.selected == tab then
+                animate(self, tab.button, { TextColor3 = color }, 0.18)
+            end
+            for _, element in ipairs(tab.elements) do
+                if
+                    not element.destroyed
+                    and element.kind == "preview"
+                    and element.mode == "aim"
+                then
+                    local stroke = element.circle:FindFirstChildOfClass("UIStroke")
+                    if stroke then
+                        animate(self, stroke, { Color = color }, 0.18)
+                    end
+                    for _, visual in ipairs({ element.line, element.center, element.dot }) do
+                        animate(self, visual, { BackgroundColor3 = color }, 0.18)
+                    end
+                end
+            end
+        end
+    end
+    for _, knob in ipairs(self.root:GetDescendants()) do
+        if knob:GetAttribute("ToggleKnob") then
+            animate(self, knob, {
+                BackgroundColor3 = toggleKnobColor(
+                    color,
+                    knob.Parent.Parent:GetAttribute("Value") == true
+                ),
+            }, 0.18)
+        end
+    end
+end
+
+function Window:SetScale(value)
+    self.config.Scale = math.clamp(value, 0.65, 1.25)
+    self.refit()
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
+end
+
+function Window:SetToggleKey(key)
+    assert(typeof(key) == "EnumItem" and key.EnumType == Enum.KeyCode, "Expected a KeyCode")
+    self.toggleKey = key
+    self.root:SetAttribute(
+        "SettingsRevision",
+        (self.root:GetAttribute("SettingsRevision") or 0) + 1
+    )
+end
+
+function Window:GetSettings()
+    return {
+        Accent = self.accent:ToHex(),
+        Scale = opt(self.config, "Scale", 1),
+        ToggleKey = self.toggleKey.Name,
+    }
+end
+
+function Window:ApplySettings(data)
+    if type(data) ~= "table" then
+        return false, "Settings must be a table"
+    end
+    local accent, scale, key
+    if data.Accent ~= nil then
+        if type(data.Accent) ~= "string" or not data.Accent:match("^%x%x%x%x%x%x$") then
+            return false, "Invalid accent color"
+        end
+        accent = Color3.fromHex(data.Accent)
+    end
+    if data.Scale ~= nil then
+        if
+            type(data.Scale) ~= "number"
+            or data.Scale ~= data.Scale
+            or math.abs(data.Scale) == math.huge
+        then
+            return false, "Invalid UI scale"
+        end
+        scale = math.clamp(data.Scale, 0.65, 1.25)
+    end
+    if data.ToggleKey ~= nil then
+        if type(data.ToggleKey) ~= "string" then
+            return false, "Invalid keybind"
+        end
+        local ok, result = pcall(function()
+            return Enum.KeyCode[data.ToggleKey]
+        end)
+        if not ok or not result or result == Enum.KeyCode.Unknown then
+            return false, "Invalid keybind"
+        end
+        key = result
+    end
+    if accent then
+        self:SetAccent(accent)
+    end
+    if scale then
+        self:SetScale(scale)
+    end
+    if key then
+        self:SetToggleKey(key)
+    end
+    return true
+end
+
+function Window:_ClampPosition(position, targetSize)
+    local viewport = self.gui.AbsoluteSize
+    local scale = self.fit or 1
+    local width = (targetSize and targetSize.X or self.root.Size.X.Offset) * scale
+    local x = position.X.Scale * viewport.X + position.X.Offset
+    local y = position.Y.Scale * viewport.Y + position.Y.Offset
+    return UDim2.fromOffset(
+        math.clamp(x, 8, math.max(8, viewport.X - width - 8)),
+        math.clamp(y, 8, math.max(8, viewport.Y - 54 * scale - 8))
+    )
+end
+
+function Window:SetVisible(value)
+    if self.destroyed or not self.ready then
+        return
+    end
+    self.visible = value == true
+    self.token += 1
+    local token = self.token
+    self.root.Visible = true
+    animate(self, self.root, {
+        GroupTransparency = self.visible and 0 or 1,
+    }, 0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    animate(self, self.scale, {
+        Scale = self.fit * (self.visible and 1 or 0.96),
+    }, 0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    animate(self, self.outline, {
+        Transparency = self.visible and 0 or 1,
+    }, 0.24, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    task.delay(0.26, function()
+        if not self.destroyed and token == self.token and not self.visible then
+            self.root.Visible = false
+        end
+    end)
+end
+
+function Window:Minimize(value)
+    if self.destroyed or not self.ready then
+        return
+    end
+    self.minimized = value == true
+    settingsState[self].button.Active = not self.minimized
+    animate(self, settingsState[self].icon, { ImageTransparency = self.minimized and 1 or 0 }, 0.22)
+    self.minToken = (self.minToken or 0) + 1
+    local token = self.minToken
+    self.positionGoal =
+        self:_ClampPosition(self.positionGoal, self.minimized and Vector2.new(276, 54) or self.size)
+    self.headerDivider.Visible = not self.minimized
+    if not self.minimized then
+        self.nav.Visible = true
+        self.body.Visible = true
+        self.footer.Visible = true
+    end
+    animate(self, self.root, {
+        Size = self.minimized and UDim2.fromOffset(276, 54)
+            or UDim2.fromOffset(self.size.X, self.size.Y),
+    }, 0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut)
+    task.delay(0.32, function()
+        if not self.destroyed and token == self.minToken and self.minimized then
+            self.nav.Visible = false
+            self.body.Visible = false
+            self.footer.Visible = false
+        end
+    end)
+end
+
+function Window:SetStatus(text)
+    if not self.destroyed then
+        self.status.Text = tostring(text)
+    end
+end
+
+function Window:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    self.unloaded = true
+    disconnect(self)
+    for object in pairs(self.tweens) do
+        cancel(self, object)
+    end
+    table.clear(self.ticks)
+    for _, tab in ipairs(self.tabs) do
+        tab:Destroy()
+    end
+    self.gui:Destroy()
+end
+Window.Unload = Window.Destroy
+
+function Window:AddTab(config)
+    assert(not self.destroyed, "Window is destroyed")
+    if type(config) == "string" then
+        config = {
+            Name = config,
+        }
+    end
+    config = config or {}
+    assert(
+        string.lower(tostring(opt(config, "Name", ""))) ~= "settings",
+        "Settings is a built-in page managed by the library"
+    )
+    local index = #self.tabs + 1
+    local tab = setmetatable({
+        window = self,
+        connections = {},
+        elements = {},
+        destroyed = false,
+        name = opt(config, "Name", "Tab " .. index),
+    }, Tab)
+    tab.button = hit(
+        self.nav,
+        "Tab" .. index,
+        UDim2.new(),
+        UDim2.fromOffset(
+            opt(config, "Width", index == 1 and 150 or math.max(78, #tab.name * 9 + 35)),
+            38
+        )
+    )
+    tab.button.Text = tab.name
+    tab.button.Font = Enum.Font.Gotham
+    tab.button.TextSize = 14
+    tab.button.TextColor3 = C.Muted
+    tab.button.LayoutOrder = index
+    tab.underline = make("Frame", {
+        Name = "Underline",
+        BackgroundColor3 = self.accent,
+        BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 1, -2),
+        Size = UDim2.new(1, 0, 0, 2),
+        Visible = false,
+    }, tab.button)
+    tab.page = make("Frame", {
+        Name = tab.name .. "Page",
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Visible = false,
+    }, self.body)
+    label(
+        tab.page,
+        "Title",
+        tab.name,
+        26,
+        UDim2.fromOffset(19, 17),
+        UDim2.new(1, -38, 0, 28),
+        C.Text,
+        true
+    )
+    label(
+        tab.page,
+        "Description",
+        opt(config, "Description", ""),
+        14,
+        UDim2.fromOffset(19, 46),
+        UDim2.new(1, -38, 0, 19),
+        C.Subtle
+    )
+    local iconName = opt(config, "Icon", nil)
+    if iconName then
+        tab.icon = addIcon(tab.page.Title, iconName, UDim2.new(), 22)
+        tab.icon.ImageColor3 = C.Muted
+        local function alignIcon()
+            local title = tab.page.Title
+            local width =
+                game:GetService("TextService")
+                    :GetTextSize(title.Text, title.TextSize, title.Font, Vector2.new(10000, 100)).X
+            tab.icon.Position = UDim2.new(0, width + 8, 0.5, -11)
+        end
+        listen(tab, tab.page.Title:GetPropertyChangedSignal("Text"), alignIcon)
+        listen(tab, tab.page.Title:GetPropertyChangedSignal("TextSize"), alignIcon)
+        alignIcon()
+    end
+    tab.columns = {}
+    for _, which in
+        {
+            "left",
+            "right",
+        }
+    do
+        local column = make("ScrollingFrame", {
+            Name = which == "left" and "LeftContent" or "RightContent",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Position = which == "left" and UDim2.fromOffset(19, 76) or UDim2.new(0.5, 5, 0, 76),
+            Size = which == "left" and UDim2.new(0.5, -30, 1, -87) or UDim2.new(0.5, -22, 1, -87),
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollBarThickness = 2,
+            ScrollBarImageColor3 = self.accent,
+        }, tab.page)
+        make("UIPadding", {
+            PaddingTop = UDim.new(0, 1),
+            PaddingLeft = UDim.new(0, 1),
+            PaddingRight = UDim.new(0, 1),
+            PaddingBottom = UDim.new(0, 2),
+        }, column)
+        make("UIListLayout", {
+            Name = "GroupLayout",
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 12),
+        }, column)
+        tab.columns[which] = column
+    end
+    listen(tab, tab.button.Activated, function()
+        self:SelectTab(tab)
+    end)
+    listen(tab, tab.button.MouseEnter, function()
+        if self.selected ~= tab then
+            animate(self, tab.button, {
+                TextColor3 = C.Text,
+            }, 0.12)
+        end
+    end)
+    listen(tab, tab.button.MouseLeave, function()
+        animate(self, tab.button, {
+            TextColor3 = self.selected == tab and self.accent or C.Muted,
+        }, 0.12)
+    end)
+    table.insert(self.tabs, tab)
+    if not self.selected then
+        self:SelectTab(tab, true)
+    end
+    return tab
+end
+
+function Window:SelectTab(tab, initial)
+    if self.destroyed then
+        return
+    end
+    if type(tab) == "string" then
+        for _, item in ipairs(self.tabs) do
+            if item.name == tab then
+                tab = item
+                break
+            end
+        end
+    end
+    assert(type(tab) == "table" and tab.window == self and not tab.destroyed, "Invalid tab")
+    if self.selected == tab then
+        return
+    end
+    if settingsState[self].page then
+        settingsState[self].page.Visible = false
+        self.root:SetAttribute("CapturingKey", false)
+    end
+    local previous = self.selected
+    self.selected = tab
+    for _, item in ipairs(self.tabs) do
+        if not item.destroyed then
+            cancel(self, item.page)
+            item.page.Position = UDim2.new()
+            item.page.Visible = item == tab
+            item.underline.Visible = item == tab
+            animate(self, item.button, {
+                TextColor3 = item == tab and self.accent or C.Muted,
+            }, 0.17)
+        end
+    end
+    tab.underline.Size = UDim2.new(0, 0, 0, 2)
+    animate(self, tab.underline, {
+        Size = UDim2.new(1, 0, 0, 2),
+    }, 0.19)
+    if previous and not initial then
+        tab.page.Position = UDim2.fromOffset(10, 0)
+        animate(self, tab.page, {
+            Position = UDim2.new(),
+        }, 0.2)
+    end
+end
+
+function Tab:SetTitle(value)
+    self.name = tostring(value)
+    self.page.Title.Text = self.name
+    self.button.Text = self.name
+end
+
+function Tab:SetDescription(value)
+    self.page.Description.Text = tostring(value)
+end
+
+function Tab:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    disconnect(self)
+    for _, item in ipairs(self.elements) do
+        item:Destroy()
+    end
+    cancel(self.window, self.page)
+    cancel(self.window, self.button)
+    cancel(self.window, self.underline)
+    self.page:Destroy()
+    self.button:Destroy()
+    if self.window.selected == self then
+        self.window.selected = nil
+        if not self.window.destroyed then
+            for _, tab in ipairs(self.window.tabs) do
+                if not tab.destroyed then
+                    self.window:SelectTab(tab)
+                    break
+                end
+            end
+        end
+    end
+end
+
+function Tab:AddGroup(config)
+    assert(not self.destroyed, "Tab is destroyed")
+    config = config or {}
+    local g = setmetatable({
+        window = self.window,
+        tab = self,
+        connections = {},
+        controls = {},
+        destroyed = false,
+        side = side(opt(config, "Side", "left")),
+    }, Group)
+    g.frame = make("Frame", {
+        Name = opt(config, "Name", "Group"),
+        BackgroundColor3 = C.Card,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, -2, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = opt(config, "Order", #self.elements + 1),
+    }, self.columns[g.side])
+    round(g.frame, 6)
+    border(g.frame)
+    make("UIGradient", {
+        Rotation = 25,
+        Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(223, 223, 223)),
+    }, g.frame)
+    make("UIPadding", {
+        PaddingTop = UDim.new(0, 3),
+        PaddingBottom = UDim.new(0, 3),
+    }, g.frame)
+    make("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, g.frame)
+    local title = opt(config, "Title", nil)
+    if title then
+        local header = make("Frame", {
+            Name = "GroupHeader",
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 32),
+            LayoutOrder = 0,
+        }, g.frame)
+        g.title = label(
+            header,
+            "Title",
+            title,
+            14,
+            UDim2.fromOffset(13, 0),
+            UDim2.new(1, -26, 1, 0),
+            C.Muted,
+            true
+        )
+        g.title.TextTruncate = Enum.TextTruncate.AtEnd
+    end
+    table.insert(self.elements, g)
+    self:_Arrange()
+    return g
+end
+Group.SetSide = elementSide
+
+function Group:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    disconnect(self)
+    for _, control in ipairs(self.controls) do
+        control:Destroy()
+    end
+    self.frame:Destroy()
+    if not self.tab.destroyed then
+        self.tab:_Arrange()
+    end
+end
+
+local function row(group, name, height)
+    assert(not group.destroyed, "Group is destroyed")
+    local count = #group.controls + 1
+    local f = make("Frame", {
+        Name = name,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, height),
+        LayoutOrder = count,
+    }, group.frame)
+    if count > 1 then
+        make("Frame", {
+            Name = "Divider",
+            BackgroundColor3 = C.Border,
+            BorderSizePixel = 0,
+            Position = UDim2.fromOffset(13, 0),
+            Size = UDim2.new(1, -28, 0, 1),
+        }, f)
+    end
+    return f
+end
+
+local function control(group, frame, config)
+    local c = {
+        window = group.window,
+        connections = {},
+        frame = frame,
+        Instance = frame,
+        destroyed = false,
+        enabled = opt(config, "Enabled", true),
+    }
+    function c:Destroy()
+        if self.destroyed then
+            return
+        end
+        self.destroyed = true
+        disconnect(self)
+        self.window.ticks[self] = nil
+        for _, v in ipairs(self.frame:GetDescendants()) do
+            cancel(self.window, v)
+        end
+        self.frame:Destroy()
+    end
+    function c:SetText(value)
+        if not self.destroyed then
+            self.label.Text = tostring(value)
+        end
+    end
+    function c:SetCallback(callback)
+        assert(callback == nil or type(callback) == "function", "Callback must be a function")
+        self.callback = callback
+    end
+    function c:SetEnabled(value)
+        if self.destroyed then
+            return
+        end
+        self.enabled = value == true
+        self.label.TextTransparency = self.enabled and 0 or 0.55
+        if self.hit then
+            self.hit.Active = self.enabled
+            self.hit.Selectable = self.enabled
+        end
+    end
+    c.callback = opt(config, "Callback", nil)
+    table.insert(group.controls, c)
+    return c
+end
+
+function Group:AddToggle(config)
+    config = config or {}
+    local w = self.window
+    local f = row(self, "Toggle", 34)
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Toggle"),
+        15,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(1, -65, 1, 0)
+    )
+    c.hit = hit(f, "Hit")
+    local track = make("Frame", {
+        Name = "Track",
+        BackgroundColor3 = C.Track,
+        BorderSizePixel = 0,
+        Position = UDim2.new(1, -47, 0.5, -9.5),
+        Size = UDim2.fromOffset(32, 19),
+    }, f)
+    round(track, 19)
+    local knob = make("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = Color3.fromRGB(249, 232, 235),
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(3, 3),
+        Size = UDim2.fromOffset(13, 14),
+    }, track)
+    round(knob, 13)
+    knob:SetAttribute("ToggleKnob", true)
+    knob:SetAttribute("FixedColor", true)
+    c.value = opt(config, "Value", false) == true
+    local function paint(smooth)
+        if smooth then
+            animate(w, track, {
+                BackgroundColor3 = c.value and w.accent or C.Track,
+            })
+            animate(w, knob, {
+                Position = UDim2.fromOffset(c.value and 17 or 3, 3),
+                BackgroundColor3 = toggleKnobColor(w.accent, c.value),
+            })
+        else
+            track.BackgroundColor3 = c.value and w.accent or C.Track
+            knob.Position = UDim2.fromOffset(c.value and 17 or 3, 3)
+            knob.BackgroundColor3 = toggleKnobColor(w.accent, c.value)
+        end
+    end
+    function c:Get()
+        return self.value
+    end
+    function c:Set(value, silent)
+        if self.destroyed then
+            return
+        end
+        value = value == true
+        local changed = self.value ~= value
+        self.value = value
+        self.frame:SetAttribute("Value", value)
+        paint(true)
+        if changed and not silent then
+            call(w, self.callback, value)
+        end
+    end
+    listen(c, c.hit.Activated, function()
+        if c.enabled then
+            c:Set(not c.value)
+        end
+    end)
+    f:SetAttribute("Value", c.value)
+    paint(false)
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddSlider(config)
+    config = config or {}
+    local w = self.window
+    local min, max, step = opt(config, "Min", 0), opt(config, "Max", 100), opt(config, "Step", 1)
+    assert(max > min and step > 0, "Slider requires Max > Min and Step > 0")
+    local f = row(self, "Slider", 52.5)
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Slider"),
+        15,
+        UDim2.fromOffset(13, 3),
+        UDim2.new(1, -110, 0, 23)
+    )
+    local number =
+        label(f, "ValueLabel", "", 15, UDim2.new(1, -100, 0, 3), UDim2.fromOffset(85, 23), C.Muted)
+    number.TextXAlignment = Enum.TextXAlignment.Right
+    local track = make("Frame", {
+        Name = "Track",
+        BackgroundColor3 = C.Track,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(14, 38),
+        Size = UDim2.new(1, -29, 0, 4),
+    }, f)
+    round(track, 4)
+    local fill = make("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0, 1),
+    }, track)
+    round(fill, 4)
+    local knob = make("Frame", {
+        Name = "Knob",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0, 0.5),
+        Size = UDim2.fromOffset(12, 12),
+    }, track)
+    round(knob, 12)
+    c.hit = hit(f, "Hit", UDim2.fromOffset(7, 27), UDim2.new(1, -14, 0, 25))
+    local active
+    local decimals = 0
+    while
+        decimals < 6
+        and math.abs(step * 10 ^ decimals - math.round(step * 10 ^ decimals)) > 0.000001
+    do
+        decimals += 1
+    end
+    function c:Get()
+        return self.value
+    end
+    function c:Set(value, silent)
+        if self.destroyed then
+            return
+        end
+        assert(type(value) == "number" and value == value, "Slider value must be a number")
+        value = math.clamp(min + math.round((value - min) / step) * step, min, max)
+        local changed = self.value ~= value
+        self.value = value
+        self.goal = (value - min) / (max - min)
+        f:SetAttribute("Value", value)
+        number.Text = string.format("%." .. decimals .. "f", value) .. opt(config, "Suffix", "")
+        if changed and not silent then
+            call(w, self.callback, value)
+        end
+    end
+    c:Set(opt(config, "Value", min), true)
+    c.display = c.goal
+    fill.Size = UDim2.fromScale(c.display, 1)
+    knob.Position = UDim2.fromScale(c.display, 0.5)
+    local function update(input)
+        if not c.enabled or track.AbsoluteSize.X <= 0 then
+            return
+        end
+        c:Set(
+            min
+                + math.clamp(
+                        (input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X,
+                        0,
+                        1
+                    )
+                    * (max - min)
+        )
+    end
+    listen(c, c.hit.InputBegan, function(input)
+        if
+            c.enabled
+            and (
+                input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            active = input
+            update(input)
+        end
+    end)
+    listen(c, UIS.InputChanged, function(input)
+        if
+            active
+            and w.visible
+            and w.selected == self.tab
+            and (
+                input == active
+                or (
+                    active.UserInputType == Enum.UserInputType.MouseButton1
+                    and input.UserInputType == Enum.UserInputType.MouseMovement
+                )
+            )
+        then
+            update(input)
+        end
+    end)
+    listen(c, UIS.InputEnded, function(input)
+        if input == active then
+            active = nil
+        end
+    end)
+    listen(c, UIS.WindowFocusReleased, function()
+        active = nil
+    end)
+    w.ticks[c] = function(alpha)
+        if math.abs(c.goal - c.display) > 0.00001 then
+            c.display += (c.goal - c.display) * alpha
+            fill.Size = UDim2.fromScale(c.display, 1)
+            knob.Position = UDim2.fromScale(c.display, 0.5)
+        end
+    end
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddDropdown(config)
+    config = config or {}
+    local w = self.window
+    local f = row(self, "Dropdown", 42)
+    local c = control(self, f, config)
+    local multi = opt(config, "Multi", false) == true
+    c.open = false
+    c.optionConnections = {}
+    c.options = {}
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Dropdown"),
+        14,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(0.42, -16, 0, 42)
+    )
+    local selected =
+        label(f, "Selected", "", 13, UDim2.new(0.42, 0, 0, 0), UDim2.new(0.58, -43, 0, 42), C.Muted)
+    selected.TextXAlignment = Enum.TextXAlignment.Right
+    selected.TextTruncate = Enum.TextTruncate.AtEnd
+    c.hit = hit(f, "Header", UDim2.new(), UDim2.new(1, 0, 0, 42))
+    c.icon = addIcon(c.hit, 136481847167022, UDim2.new(1, -23, 0.5, 0), 18)
+    c.icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    local optionsFrame = make("ScrollingFrame", {
+        Name = "Options",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(10, 42),
+        Size = UDim2.new(1, -20, 0, 0),
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = w.accent,
+        ClipsDescendants = true,
+        Visible = false,
+    }, f)
+    make(
+        "UIListLayout",
+        { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) },
+        optionsFrame
+    )
+    local entries = {}
+    local function paint()
+        selected.Text = multi and (#(c.value or {}) > 0 and table.concat(c.value, ", ") or opt(config, "Placeholder", "Select..."))
+            or c.value or opt(config, "Placeholder", "Select...")
+        for value, entry in pairs(entries) do
+            local active = multi and table.find(c.value or {}, value) ~= nil or (not multi and value == c.value)
+            animate(w, entry.label, { TextColor3 = active and w.accent or C.Text }, 0.14)
+            animate(w, entry.icon, { ImageTransparency = active and 0 or 1 }, 0.14)
+        end
+    end
+    function c:Get()
+        return multi and table.clone(self.value or {}) or self.value
+    end
+    function c:SetOpen(value)
+        if self.destroyed then
+            return
+        end
+        self.open = value == true and self.enabled and #self.options > 0
+        self.openToken = (self.openToken or 0) + 1
+        local token = self.openToken
+        local rows = math.min(#self.options, math.clamp(opt(config, "MaxVisible", 5), 1, 10))
+        local height = self.open and rows * 33 - 3 + 8 or 0
+        optionsFrame.Visible = true
+        animate(w, f, { Size = UDim2.new(1, 0, 0, 42 + height) }, 0.2)
+        animate(w, optionsFrame, { Size = UDim2.new(1, -20, 0, math.max(0, height - 5)) }, 0.2)
+        animate(w, self.icon, { Rotation = self.open and 180 or 0 }, 0.2)
+        task.delay(0.21, function()
+            if not self.destroyed and token == self.openToken and not self.open then
+                optionsFrame.Visible = false
+            end
+        end)
+    end
+    function c:Set(value, silent)
+        if self.destroyed then
+            return
+        end
+        if multi then
+            assert(type(value) == "table", "Multiselect value must be an array")
+            local nextValue, seen = {}, {}
+            for _, item in ipairs(value) do
+                assert(entries[item], "Dropdown value is not in Options")
+                if not seen[item] then seen[item] = true; table.insert(nextValue, item) end
+            end
+            table.sort(nextValue)
+            local changed = table.concat(self.value or {}, "\0") ~= table.concat(nextValue, "\0")
+            self.value = nextValue
+            self.frame:SetAttribute("SelectionCount", #nextValue)
+            paint()
+            if changed and not silent then call(w, self.callback, self:Get()) end
+        else
+            assert(value == nil or entries[value], "Dropdown value is not in Options")
+            local changed = self.value ~= value
+            self.value = value
+            self.frame:SetAttribute("Value", value)
+            paint()
+            if changed and not silent then call(w, self.callback, value) end
+        end
+    end
+    function c:SetOptions(values, silent)
+        if self.destroyed then
+            return
+        end
+        assert(type(values) == "table", "Options must be an array of strings")
+        local nextValues, unique = {}, {}
+        for _, value in ipairs(values) do
+            assert(
+                type(value) == "string" and not unique[value],
+                "Dropdown options must be unique strings"
+            )
+            unique[value] = true
+            table.insert(nextValues, value)
+        end
+        for _, connection in ipairs(self.optionConnections) do
+            connection:Disconnect()
+        end
+        table.clear(self.optionConnections)
+        for _, entry in pairs(entries) do
+            entry.button:Destroy()
+        end
+        table.clear(entries)
+        self.options = nextValues
+        for index, value in ipairs(nextValues) do
+            local button =
+                hit(optionsFrame, "Option" .. index, UDim2.new(), UDim2.new(1, -4, 0, 30))
+            button.LayoutOrder = index
+            button.BackgroundColor3 = Color3.fromRGB(40, 42, 47)
+            round(button, 4)
+            local title =
+                label(button, "Label", value, 13, UDim2.fromOffset(28, 0), UDim2.new(1, -36, 1, 0))
+            title.TextTruncate = Enum.TextTruncate.AtEnd
+            local icon = addIcon(button, 86469743635172, UDim2.new(0, 12, 0.5, 0), 14)
+            icon.AnchorPoint = Vector2.new(0.5, 0.5)
+            entries[value] = { button = button, label = title, icon = icon }
+            table.insert(
+                self.optionConnections,
+                button.Activated:Connect(function()
+                    if not self.enabled then
+                        return
+                    end
+                    if multi then
+                        local values = self:Get()
+                        local index = table.find(values, value)
+                        if index then table.remove(values, index) else table.insert(values, value) end
+                        self:Set(values)
+                    else
+                        self:Set(value)
+                        self:SetOpen(false)
+                    end
+                end)
+            )
+            table.insert(
+                self.optionConnections,
+                button.MouseEnter:Connect(function()
+                    animate(w, button, { BackgroundTransparency = 0.35 }, 0.12)
+                end)
+            )
+            table.insert(
+                self.optionConnections,
+                button.MouseLeave:Connect(function()
+                    animate(w, button, { BackgroundTransparency = 1 }, 0.12)
+                end)
+            )
+        end
+        local value
+        if multi then
+            value = {}
+            for _, item in ipairs(self.value or {}) do
+                if unique[item] then table.insert(value, item) end
+            end
+        else value = unique[self.value] and self.value or nil end
+        self:Set(value, silent)
+        self:SetOpen(self.open)
+    end
+    local setEnabled = c.SetEnabled
+    function c:SetEnabled(value)
+        setEnabled(self, value)
+        if self.destroyed then
+            return
+        end
+        selected.TextTransparency = self.enabled and 0 or 0.55
+        self.icon.ImageTransparency = self.enabled and 0 or 0.55
+        if not self.enabled then
+            self:SetOpen(false)
+        end
+    end
+    local destroy = c.Destroy
+    function c:Destroy()
+        for _, connection in ipairs(self.optionConnections) do
+            connection:Disconnect()
+        end
+        table.clear(self.optionConnections)
+        destroy(self)
+    end
+    listen(c, c.hit.Activated, function()
+        if c.enabled then
+            c:SetOpen(not c.open)
+        end
+    end)
+    listen(c, UIS.InputBegan, function(input)
+        if not c.open then
+            return
+        end
+        if input.KeyCode == Enum.KeyCode.Escape then
+            c:SetOpen(false)
+            return
+        end
+        if
+            input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            local p, size = f.AbsolutePosition, f.AbsoluteSize
+            local point = input.Position
+            if
+                point.X < p.X
+                or point.Y < p.Y
+                or point.X > p.X + size.X
+                or point.Y > p.Y + size.Y
+            then
+                c:SetOpen(false)
+            end
+        end
+    end)
+    listen(c, self.tab.page:GetPropertyChangedSignal("Visible"), function()
+        if not self.tab.page.Visible then
+            c:SetOpen(false)
+        end
+    end)
+    c:SetOptions(opt(config, "Options", {}), true)
+    c:Set(opt(config, "Value", multi and {} or c.options[1]), true)
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddTextbox(config)
+    config = config or {}
+    local w = self.window
+    local f = row(self, "Textbox", 44)
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Label",
+        opt(config, "Name", "Textbox"),
+        14,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(0.4, -18, 1, 0)
+    )
+    c.label.Visible = false
+    local field = make("Frame", {
+        Name = "Field",
+        BackgroundColor3 = Color3.fromRGB(30, 32, 36),
+        BorderSizePixel = 0,
+        Position = UDim2.new(0, 10, 0.5, -16),
+        Size = UDim2.new(1, -20, 0, 32),
+    }, f)
+    round(field, 5)
+    local outline = border(field)
+    c.input = make("TextBox", {
+        Name = "Input",
+        Text = "",
+        PlaceholderText = opt(config, "Placeholder", "Enter text..."),
+        PlaceholderColor3 = C.Subtle,
+        TextColor3 = C.Text,
+        TextSize = 13,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false,
+        MultiLine = false,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(32, 0),
+        Size = UDim2.new(1, -41, 1, 0),
+    }, field)
+    c.hit = c.input
+    c.icon = addIcon(field, opt(config, "Icon", 86469743635172), UDim2.new(0, 15, 0.5, 0), 18)
+    c.icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    c.icon.ImageColor3 = C.Text
+    c.icon:SetAttribute("FixedColor", true)
+    local iconScale = make("UIScale", { Scale = 1 }, c.icon)
+    local maxLength = math.max(1, math.floor(opt(config, "MaxLength", 200)))
+    function c:Get()
+        return self.value
+    end
+    function c:Set(value, silent)
+        if self.destroyed then
+            return
+        end
+        assert(type(value) == "string", "Textbox value must be a string")
+        local length = utf8.len(value)
+        if length and length > maxLength then
+            value = value:sub(1, utf8.offset(value, maxLength + 1) - 1)
+        end
+        local changed = self.value ~= value
+        self.value = value
+        self.input.Text = value
+        self.frame:SetAttribute("Value", value)
+        if changed and not silent then
+            call(w, self.callback, value)
+        end
+    end
+    function c:SetPlaceholder(value)
+        if not self.destroyed then
+            self.input.PlaceholderText = tostring(value)
+        end
+    end
+    local setEnabled = c.SetEnabled
+    function c:SetEnabled(value)
+        if self.destroyed then
+            return
+        end
+        setEnabled(self, value)
+        self.input.TextEditable = self.enabled
+        self.input.TextTransparency = self.enabled and 0 or 0.55
+        self.icon.ImageTransparency = self.enabled and 0 or 0.55
+        if not self.enabled and self.input:IsFocused() then
+            self.input:ReleaseFocus()
+        end
+    end
+    local function pulse()
+        c.pulseToken = (c.pulseToken or 0) + 1
+        local token = c.pulseToken
+        animate(w, iconScale, { Scale = 0.8 }, 0.08)
+        task.delay(0.08, function()
+            if not c.destroyed and token == c.pulseToken then
+                animate(w, iconScale, { Scale = 1 }, 0.23, Enum.EasingStyle.Back)
+            end
+        end)
+    end
+    listen(c, c.input.Focused, function()
+        if c.enabled then
+            animate(w, outline, { Color = w.accent }, 0.15)
+        end
+    end)
+    listen(c, c.input.FocusLost, function(enterPressed)
+        if c.destroyed then
+            return
+        end
+        animate(w, outline, { Color = C.Border }, 0.15)
+        if c.enabled and enterPressed then
+            c:Set(c.input.Text, true)
+            call(w, c.callback, c:Get())
+            pulse()
+        end
+    end)
+    c:Set(opt(config, "Value", ""), true)
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddButton(config)
+    config = config or {}
+    local w = self.window
+    local f = row(self, "Button", 34)
+    local c = control(self, f, config)
+    c.hit = hit(f, "Hit")
+    c.hit.BackgroundColor3 = Color3.fromRGB(47, 33, 40)
+    round(c.hit, 5)
+    c.label = label(
+        c.hit,
+        "Label",
+        opt(config, "Name", opt(config, "Text", "Button")),
+        15,
+        UDim2.fromOffset(13, 0),
+        UDim2.new(1, -26, 1, 0)
+    )
+    local iconName = opt(config, "Icon", 125304603079291)
+    if iconName then
+        local iconSize = math.clamp(opt(config, "IconSize", 20), 12, 28)
+        c.icon = addIcon(c.hit, iconName, UDim2.new(0, 9, 0.5, -iconSize / 2), iconSize)
+        c.label.Position = UDim2.fromOffset(17 + iconSize, 0)
+        c.label.Size = UDim2.new(1, -30 - iconSize, 1, 0)
+        c.icon:SetAttribute("FixedColor", true)
+        c.icon.AnchorPoint = Vector2.new(0.5, 0.5)
+        c.icon.Position = UDim2.new(0, 9 + iconSize / 2, 0.5, 0)
+        c.iconScale = make("UIScale", { Scale = 1 }, c.icon)
+        local function matchText()
+            c.icon.ImageColor3 = c.label.TextColor3
+            c.icon.ImageTransparency = c.label.TextTransparency
+        end
+        matchText()
+        listen(c, c.label:GetPropertyChangedSignal("TextColor3"), matchText)
+        listen(c, c.label:GetPropertyChangedSignal("TextTransparency"), matchText)
+    end
+    local hovered = false
+    c.busy = false
+    local function paint(pressed)
+        animate(w, c.hit, {
+            BackgroundTransparency = c.enabled and (pressed and 0.1 or hovered and 0.55 or 1) or 1,
+        }, 0.13)
+    end
+    listen(c, c.hit.MouseEnter, function()
+        hovered = true
+        paint(false)
+    end)
+    listen(c, c.hit.MouseLeave, function()
+        hovered = false
+        paint(false)
+    end)
+    listen(c, c.hit.InputBegan, function(input)
+        if
+            c.enabled
+            and (
+                input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            paint(true)
+        end
+    end)
+    listen(c, c.hit.Activated, function()
+        if c.enabled and c.icon then
+            c.iconToken = (c.iconToken or 0) + 1
+            local token = c.iconToken
+            animate(w, c.iconScale, { Scale = 0.78 }, 0.08)
+            animate(w, c.icon, { Rotation = -14 }, 0.08)
+            task.delay(0.08, function()
+                if not c.destroyed and c.icon.Parent and token == c.iconToken then
+                    animate(w, c.iconScale, { Scale = 1 }, 0.25, Enum.EasingStyle.Back)
+                    animate(w, c.icon, { Rotation = 0 }, 0.25, Enum.EasingStyle.Back)
+                end
+            end)
+        end
+        if not c.enabled or c.busy then
+            return
+        end
+        c.busy = true
+        paint(true)
+        task.spawn(function()
+            local ok, err = pcall(function()
+                if c.callback then
+                    c.callback(c)
+                end
+            end)
+            c.busy = false
+            if not ok then
+                warn("[daxware] Button:", err)
+            end
+            if not c.destroyed then
+                paint(false)
+            end
+        end)
+    end)
+    c:SetEnabled(c.enabled)
+    return c
+end
+
+function Group:AddText(config)
+    if type(config) == "string" then
+        config = { Text = config }
+    end
+    config = config or {}
+    local f = row(self, "Text", 36)
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Text",
+        opt(config, "Text", opt(config, "Name", "")),
+        opt(config, "TextSize", 14),
+        UDim2.fromOffset(41, 8),
+        UDim2.new(1, -54, 1, -16),
+        opt(config, "Color", C.Muted)
+    )
+    c.label.TextWrapped = true
+    c.icon = addIcon(f, opt(config, "Icon", 73498261973195), UDim2.new(0, 23, 0.5, 0), 20)
+    c.icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    c.icon:SetAttribute("FixedColor", true)
+    local function resize()
+        if c.destroyed then
+            return
+        end
+        local scale = math.max(c.window.scale.Scale, 0.001)
+        local width = math.max(1, c.label.AbsoluteSize.X / scale)
+        local bounds = game:GetService("TextService"):GetTextSize(
+            c.label.Text,
+            c.label.TextSize,
+            c.label.Font,
+            Vector2.new(width, 100000)
+        )
+        f.Size = UDim2.new(1, 0, 0, math.max(opt(config, "MinHeight", 36), bounds.Y + 16))
+    end
+    local function style()
+        c.icon.ImageColor3 = c.label.TextColor3
+        c.icon.ImageTransparency = c.label.TextTransparency
+    end
+    function c:Get()
+        return self.label.Text
+    end
+    function c:SetText(value)
+        if self.destroyed then
+            return
+        end
+        self.label.Text = tostring(value)
+        resize()
+    end
+    c.Set = c.SetText
+    listen(c, c.label:GetPropertyChangedSignal("AbsoluteSize"), resize)
+    listen(c, c.label:GetPropertyChangedSignal("Text"), resize)
+    listen(c, c.label:GetPropertyChangedSignal("TextColor3"), style)
+    listen(c, c.label:GetPropertyChangedSignal("TextTransparency"), style)
+    c:SetEnabled(c.enabled)
+    style()
+    task.defer(resize)
+    return c
+end
+
+function Group:AddLabel(config)
+    if type(config) == "string" then
+        config = {
+            Text = config,
+        }
+    end
+    config = config or {}
+    local f = row(self, "Label", opt(config, "Height", 34))
+    local c = control(self, f, config)
+    c.label = label(
+        f,
+        "Text",
+        opt(config, "Text", ""),
+        opt(config, "TextSize", 14),
+        UDim2.fromOffset(13, 2),
+        UDim2.new(1, -26, 1, -4),
+        opt(config, "Color", C.Muted)
+    )
+    c.label.TextWrapped = true
+    return c
+end
+
+function Tab:_Arrange()
+    local first = {}
+    for _, element in ipairs(self.elements) do
+        if not element.destroyed and not first[element.side] then
+            first[element.side] = element
+        end
+    end
+    local raised
+    if
+        first.left
+        and first.left.kind == "preview"
+        and (not first.right or first.right.kind ~= "preview")
+    then
+        raised = "left"
+    elseif
+        first.right
+        and first.right.kind == "preview"
+        and (not first.left or first.left.kind ~= "preview")
+    then
+        raised = "right"
+    end
+    for which, column in pairs(self.columns) do
+        local p = column.Position
+        column.Position = UDim2.new(p.X.Scale, p.X.Offset, 0, which == raised and 17 or 76)
+        column.Size =
+            UDim2.new(column.Size.X.Scale, column.Size.X.Offset, 1, which == raised and -26 or -85)
+    end
+    local rightTitle = raised == "left"
+    self.page.Title.Position = rightTitle and UDim2.new(0.5, 5, 0, 17) or UDim2.fromOffset(19, 17)
+    self.page.Description.Position = rightTitle and UDim2.new(0.5, 5, 0, 46)
+        or UDim2.fromOffset(19, 46)
+    self.page.Title.Size = UDim2.new(0.5, -30, 0, 28)
+    self.page.Description.Size = UDim2.new(0.5, -30, 0, 19)
+end
+
+function Tab:AddPreview(config)
+    assert(not self.destroyed, "Tab is destroyed")
+    config = config or {}
+    local w = self.window
+    local p = setmetatable({
+        window = w,
+        tab = self,
+        connections = {},
+        destroyed = false,
+        kind = "preview",
+        side = side(opt(config, "Side", "right")),
+        mode = string.lower(opt(config, "Type", "aim")),
+        target = opt(config, "Target", nil),
+        goal = nil,
+        fov = opt(config, "Radius", 250),
+        circleVisible = opt(config, "Circle", true),
+        lineVisible = opt(config, "Line", true),
+        espEnabled = true,
+        namesVisible = true,
+        highlightVisible = opt(config, "Highlight", false),
+        role = opt(config, "Role", "Sheriff"),
+        playerName = opt(config, "PlayerName", Players.LocalPlayer.Name),
+    }, Preview)
+    assert(p.mode == "aim" or p.mode == "esp", "Preview Type must be aim or esp")
+    p.target = p.target or (p.mode == "aim" and Vector2.new(0.692, 0.402) or Vector2.new(0.5, 0.46))
+    p.goal = p.target
+    p.displayFov = p.fov
+    p.frame = make("Frame", {
+        Name = p.mode == "aim" and "AimPreview" or "ESPPreview",
+        BackgroundColor3 = C.Card,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, -2, 0, opt(config, "Height", math.max(180, w.size.Y - 157))),
+        ClipsDescendants = true,
+        LayoutOrder = opt(config, "Order", #self.elements + 1),
+    }, self.columns[p.side])
+    round(p.frame, 6)
+    border(p.frame)
+    local grid = make("Frame", {
+        Name = "Grid",
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+    }, p.frame)
+    for i = 1, 9 do
+        make("Frame", {
+            Name = "Vertical" .. i,
+            BackgroundColor3 = C.Border,
+            BackgroundTransparency = 0.4,
+            BorderSizePixel = 0,
+            Position = UDim2.fromScale(i / 10, 0),
+            Size = UDim2.new(0, 1, 1, 0),
+        }, grid)
+    end
+    for i = 1, 8 do
+        make("Frame", {
+            Name = "Horizontal" .. i,
+            BackgroundColor3 = C.Border,
+            BackgroundTransparency = 0.4,
+            BorderSizePixel = 0,
+            Position = UDim2.fromScale(0, i / 9),
+            Size = UDim2.new(1, 0, 0, 1),
+        }, grid)
+    end
+    label(
+        p.frame,
+        "Title",
+        opt(config, "Title", p.mode == "aim" and "Target preview" or "ESP preview"),
+        13,
+        UDim2.fromOffset(12, 5),
+        UDim2.new(1, -24, 0, 22),
+        C.Muted
+    )
+    p.circle = make("Frame", {
+        Name = "Circle",
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.505),
+    }, p.frame)
+    round(p.circle, 999)
+    border(p.circle, w.accent, 1.3)
+    p.line = make("Frame", {
+        Name = "TargetLine",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+    }, p.frame)
+    p.center = make("Frame", {
+        Name = "CenterDot",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.505),
+        Size = UDim2.fromOffset(8, 8),
+    }, p.frame)
+    round(p.center, 8)
+    p.humanoid = make("ImageButton", {
+        Name = "Humanoid",
+        Image = asset(opt(config, "Image", "rbxassetid://7114263327")),
+        BackgroundTransparency = 1,
+        AutoButtonColor = false,
+        ImageColor3 = opt(config, "ImageColor", Color3.fromRGB(125, 125, 125)),
+        AnchorPoint = Vector2.new(0.5, 0.44),
+        ScaleType = Enum.ScaleType.Fit,
+        Size = p.mode == "aim" and UDim2.fromOffset(52, 77) or UDim2.fromOffset(151, 214),
+    }, p.frame)
+    p.dot = make("Frame", {
+        Name = "TargetDot",
+        BackgroundColor3 = w.accent,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(6, 6),
+    }, p.frame)
+    round(p.dot, 6)
+    p.box = make("Frame", {
+        Name = "BoundingBox",
+        BackgroundTransparency = 1,
+    }, p.frame)
+    p.boxStroke = border(p.box, roleColors[p.role] or C.Muted)
+    p.nameLabel = label(p.frame, "NameRole", "", 12, UDim2.new(), UDim2.fromOffset(260, 17))
+    p.nameLabel.AnchorPoint = Vector2.new(0.5, 1)
+    p.nameLabel.Font = Enum.Font.ArialBold
+    p.nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+    p.nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    p.nameLabel.TextStrokeTransparency = 0
+    p.highlight = make("ImageLabel", {
+        Name = "CharacterHighlight",
+        Image = p.humanoid.Image,
+        BackgroundTransparency = 1,
+        AnchorPoint = p.humanoid.AnchorPoint,
+        Size = p.humanoid.Size,
+        ScaleType = Enum.ScaleType.Fit,
+        ImageTransparency = 0.55,
+    }, p.frame)
+    local dragging, start, original
+    local draggable = opt(config, "Draggable", p.mode == "aim")
+    listen(p, p.humanoid.InputBegan, function(input)
+        if
+            draggable
+            and (
+                input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            )
+        then
+            dragging = input
+            start = Vector2.new(input.Position.X, input.Position.Y)
+            original = p.goal
+        end
+    end)
+    listen(p, UIS.InputChanged, function(input)
+        if not dragging or w.selected ~= self or not w.visible or w.minimized then
+            return
+        end
+        if
+            input == dragging
+            or (
+                dragging.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseMovement
+            )
+        then
+            local size = p.frame.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then
+                return
+            end
+            local d = Vector2.new(input.Position.X, input.Position.Y) - start
+            local point = original + Vector2.new(d.X / size.X, d.Y / size.Y)
+            local width = p.humanoid.AbsoluteSize.X / 2 / size.X
+            local top = p.humanoid.AbsoluteSize.Y * 0.44 / size.Y
+            local bottom = p.humanoid.AbsoluteSize.Y * 0.56 / size.Y
+            p.goal = Vector2.new(
+                math.clamp(point.X, math.min(width, 0.49), math.max(1 - width, 0.51)),
+                math.clamp(point.Y, math.min(top, 0.49), math.max(1 - bottom, 0.51))
+            )
+        end
+    end)
+    listen(p, UIS.InputEnded, function(input)
+        if input == dragging then
+            dragging = nil
+        end
+    end)
+    listen(p, UIS.WindowFocusReleased, function()
+        dragging = nil
+    end)
+    if p.mode == "esp" and opt(config, "CycleRoles", true) then
+        listen(p, p.humanoid.Activated, function()
+            p:SetRole(p.role == "Sheriff" and "Murderer" or "Sheriff")
+        end)
+        local hint = label(
+            p.frame,
+            "Hint",
+            "Click character to switch role",
+            10,
+            UDim2.new(0, 0, 1, -25),
+            UDim2.new(1, 0, 0, 20),
+            C.Subtle
+        )
+        hint.TextXAlignment = Enum.TextXAlignment.Center
+    end
+    listen(p, p.frame:GetPropertyChangedSignal("AbsoluteSize"), function()
+        p:_Draw()
+    end)
+    w.ticks[p] = function(alpha)
+        local dirty = false
+        if (p.goal - p.target).Magnitude > 0.00001 then
+            p.target = p.target:Lerp(p.goal, alpha)
+            dirty = true
+        end
+        if math.abs(p.fov - p.displayFov) > 0.001 then
+            p.displayFov += (p.fov - p.displayFov) * alpha
+            dirty = true
+        end
+        if dirty then
+            p:_Draw()
+        end
+    end
+    grid.ZIndex = 1
+    p.humanoid.ZIndex = 2
+    p.highlight.ZIndex = 3
+    p.circle.ZIndex = 4
+    p.line.ZIndex = 5
+    p.center.ZIndex = 6
+    p.dot.ZIndex = 6
+    p.box.ZIndex = 7
+    p.nameLabel.ZIndex = 8
+
+    p:_Style(false)
+    table.insert(self.elements, p)
+    self:_Arrange()
+    task.defer(function()
+        if not p.destroyed then
+            p:_Draw()
+        end
+    end)
+    return p
+end
+
+function Preview:_Draw()
+    if self.destroyed or self.window.destroyed then
+        return
+    end
+    local size = self.frame.AbsoluteSize / math.max(self.window.scale.Scale, 0.001)
+    if size.X <= 0 or size.Y <= 0 then
+        return
+    end
+    local radius = math.clamp(
+        size.X * 0.351 * (self.displayFov or self.fov) / 250,
+        12,
+        math.min(size.X, size.Y) * 0.48
+    )
+    self.circle.Size = UDim2.fromOffset(radius * 2, radius * 2)
+    self.humanoid.Position = UDim2.fromScale(self.target.X, self.target.Y)
+    self.highlight.Position = self.humanoid.Position
+    local origin = Vector2.new(size.X * 0.5, size.Y * 0.505)
+    local target = Vector2.new(size.X * self.target.X, size.Y * self.target.Y)
+    local delta = target - origin
+    self.inside = delta.Magnitude <= radius
+    self.frame:SetAttribute("TargetInsideCircle", self.inside)
+    local aim = self.mode == "aim"
+    self.circle.Visible = aim and self.circleVisible
+    self.center.Visible = aim
+    self.line.Visible = aim and self.lineVisible and self.inside
+    self.dot.Visible = self.line.Visible
+    self.dot.Position = self.humanoid.Position
+    self.line.Position = UDim2.fromOffset((origin.X + target.X) / 2, (origin.Y + target.Y) / 2)
+    self.line.Size = UDim2.fromOffset(delta.Magnitude, 1)
+    self.line.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+    local hs = self.humanoid.Size
+    self.box.Position =
+        UDim2.fromOffset(target.X - hs.X.Offset / 2 - 10, target.Y - hs.Y.Offset * 0.44 - 3)
+    self.box.Size = UDim2.fromOffset(hs.X.Offset + 20, hs.Y.Offset + 7)
+    self.nameLabel.Position = UDim2.fromOffset(target.X, self.box.Position.Y.Offset - 3)
+end
+
+function Preview:_Style(smooth)
+    if self.destroyed or self.window.destroyed then
+        return
+    end
+    local esp = self.mode == "esp"
+    self.box.Visible = esp
+    self.nameLabel.Visible = esp
+    self.highlight.Visible = esp
+    if not esp then
+        return
+    end
+    local color = roleColors[self.role] or C.Muted
+    self.nameLabel.Text = self.playerName .. " [" .. self.role .. "]"
+    local boxProperties = {
+        Color = color,
+        Transparency = self.espEnabled and 0 or 1,
+    }
+    local showName = self.espEnabled and self.namesVisible
+    local textProperties = {
+        TextColor3 = color,
+        TextTransparency = showName and 0 or 1,
+        TextStrokeTransparency = showName and 0 or 1,
+    }
+    local imageProperties = {
+        ImageColor3 = color,
+        ImageTransparency = self.espEnabled and self.highlightVisible and 0.55 or 1,
+    }
+    if smooth then
+        animate(self.window, self.boxStroke, boxProperties, 0.16)
+        animate(self.window, self.nameLabel, textProperties, 0.16)
+        animate(self.window, self.highlight, imageProperties, 0.16)
+    else
+        for k, v in pairs(boxProperties) do
+            self.boxStroke[k] = v
+        end
+        for k, v in pairs(textProperties) do
+            self.nameLabel[k] = v
+        end
+        for k, v in pairs(imageProperties) do
+            self.highlight[k] = v
+        end
+    end
+end
+
+function Preview:SetTarget(value)
+    if self.destroyed then
+        return
+    end
+    assert(typeof(value) == "Vector2", "Target must be Vector2")
+    self.goal = Vector2.new(math.clamp(value.X, 0, 1), math.clamp(value.Y, 0, 1))
+end
+
+function Preview:GetTarget()
+    return self.target
+end
+
+function Preview:IsInsideCircle()
+    return self.inside == true
+end
+
+function Preview:SetRadius(value)
+    if self.destroyed then
+        return
+    end
+    assert(type(value) == "number" and value >= 0, "Radius must be nonnegative")
+    self.fov = value
+    self:_Draw()
+end
+
+function Preview:SetLineVisible(value)
+    self.lineVisible = value == true
+    self:_Draw()
+end
+
+function Preview:SetCircleVisible(value)
+    self.circleVisible = value == true
+    self:_Draw()
+end
+
+function Preview:SetRole(value)
+    if self.destroyed then
+        return
+    end
+    self.role = tostring(value)
+    self:_Style(true)
+end
+
+function Preview:SetName(value)
+    if self.destroyed then
+        return
+    end
+    self.playerName = tostring(value)
+    self:_Style(true)
+end
+
+function Preview:SetESPEnabled(value)
+    if self.destroyed then
+        return
+    end
+    self.espEnabled = value == true
+    self:_Style(true)
+end
+
+function Preview:SetNamesVisible(value)
+    if self.destroyed then
+        return
+    end
+    self.namesVisible = value == true
+    self:_Style(true)
+end
+
+function Preview:SetHighlightVisible(value)
+    if self.destroyed then
+        return
+    end
+    self.highlightVisible = value == true
+    self:_Style(true)
+end
+
+function Preview:SetImage(value)
+    self.humanoid.Image = asset(value)
+    self.highlight.Image = self.humanoid.Image
+end
+
+function Preview:SetSide(value)
+    elementSide(self, value)
+    self.tab:_Arrange()
+    self:_Draw()
+end
+
+function Preview:Destroy()
+    if self.destroyed then
+        return
+    end
+    self.destroyed = true
+    disconnect(self)
+    self.window.ticks[self] = nil
+    for _, v in self.frame:GetDescendants() do
+        cancel(self.window, v)
+    end
+    self.frame:Destroy()
+    if not self.tab.destroyed then
+        self.tab:_Arrange()
+    end
+end
+
+function Window:_Load()
+    if self.destroyed then
+        return
+    end
+    local l = make("CanvasGroup", {
+        Name = "Loader",
+        BackgroundColor3 = C.Background,
+        BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(389, 215),
+        GroupColor3 = Color3.new(1, 1, 1),
+    }, self.gui)
+    round(l, 8)
+    local outline = border(l)
+    local scale = make("UIScale", {
+        Scale = 0.97,
+    }, l)
+    label(
+        l,
+        "Title",
+        opt(self.config, "Title", "daxware"),
+        20,
+        UDim2.fromOffset(18, 9),
+        UDim2.fromOffset(250, 26),
+        C.Text,
+        true
+    )
+    local spinner = make("ImageLabel", {
+        Name = "Spinner",
+        Image = asset(opt(self.config, "SpinnerImage", "111673319252699")),
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 77),
+        Size = UDim2.fromOffset(54, 54),
+        ScaleType = Enum.ScaleType.Fit,
+    }, l)
+    local loading = label(
+        l,
+        "LoadingText",
+        "Loading...",
+        22,
+        UDim2.fromOffset(0, 110),
+        UDim2.fromOffset(389, 30),
+        C.Text,
+        true
+    )
+    loading.TextXAlignment = Enum.TextXAlignment.Center
+    local subtitle = label(
+        l,
+        "Subtitle",
+        "Getting things ready",
+        13,
+        UDim2.fromOffset(0, 142),
+        UDim2.fromOffset(389, 22),
+        C.Subtle
+    )
+    subtitle.TextXAlignment = Enum.TextXAlignment.Center
+    local track = make("Frame", {
+        Name = "Track",
+        BackgroundColor3 = C.Track,
+        BorderSizePixel = 0,
+        Position = UDim2.fromOffset(18, 181),
+        Size = UDim2.fromOffset(309, 7),
+    }, l)
+    round(track, 7)
+    local fill = make("Frame", {
+        Name = "Fill",
+        BackgroundColor3 = self.accent,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(0, 1),
+    }, track)
+    round(fill, 7)
+    local percent = label(
+        l,
+        "Percentage",
+        "0%",
+        13,
+        UDim2.fromOffset(333, 171),
+        UDim2.fromOffset(40, 27),
+        C.Muted
+    )
+    percent.TextXAlignment = Enum.TextXAlignment.Center
+    local progress, goal = 0, 0
+    local started = os.clock()
+    self.loader = l
+    self.ticks[l] = function(alpha, dt)
+        spinner.Rotation = (spinner.Rotation + 210 * dt) % 360
+        progress += (goal - progress) * alpha
+        fill.Size = UDim2.fromScale(progress, 1)
+        percent.Text = math.floor(progress * 100 + 0.5) .. "%"
+    end
+    animate(self, scale, {
+        Scale = 1,
+    }, 0.22)
+    local function waitFor(predicate, timeout)
+        local deadline = os.clock() + timeout
+        while not self.destroyed and not predicate() and os.clock() < deadline do
+            task.wait(0.05)
+        end
+        return not self.destroyed and predicate()
+    end
+    waitFor(function()
+        return game:IsLoaded()
+    end, 20)
+    if self.destroyed then
+        return
+    end
+    goal = 0.3
+    subtitle.Text = "Loading preview assets"
+    local assets, seen = {}, {}
+    for _, v in self.gui:GetDescendants() do
+        if
+            (v:IsA("ImageLabel") or v:IsA("ImageButton"))
+            and v.Image ~= ""
+            and not seen[v.Image]
+        then
+            seen[v.Image] = true
+            table.insert(assets, v.Image)
+        end
+    end
+    local done = false
+    local completed = 0
+    local failures = 0
+    task.spawn(function()
+        local ok = pcall(function()
+            ContentProvider:PreloadAsync(assets, function(_, status)
+                completed += 1
+                if status ~= Enum.AssetFetchStatus.Success then
+                    failures += 1
+                end
+                goal = math.max(goal, 0.3 + 0.65 * completed / math.max(#assets, 1))
+            end)
+        end)
+        if not ok then
+            failures += 1
+        end
+        done = true
+    end)
+    waitFor(function()
+        return done
+    end, 12)
+    if self.destroyed then
+        return
+    end
+    subtitle.Text = "Almost ready"
+    goal = 0.95
+    waitFor(function()
+        return os.clock() - started >= opt(self.config, "LoadingDuration", 2.2)
+    end, math.max(1, opt(self.config, "LoadingDuration", 2.2) + 1))
+    goal = 1
+    loading.Text = "Ready"
+    subtitle.Text = "Ready"
+    waitFor(function()
+        return progress > 0.998
+    end, 1)
+    if self.destroyed then
+        return
+    end
+    fill.Size = UDim2.fromScale(1, 1)
+    percent.Text = "100%"
+    task.wait(0.15)
+    if self.destroyed then
+        return
+    end
+    l:SetAttribute("State", "Complete")
+    l:SetAttribute("AssetFailures", failures)
+    self.ready = true
+    self.root.Visible = true
+    self.scale.Scale = self.fit * 0.96
+    self:SetVisible(true)
+    animate(self, l, {
+        GroupTransparency = 1,
+    }, 0.28)
+    animate(self, outline, {
+        Transparency = 1,
+    }, 0.28)
+    animate(self, scale, {
+        Scale = 0.97,
+    }, 0.28)
+    task.delay(0.3, function()
+        if not self.destroyed then
+            self.ticks[l] = nil
+            l.Visible = false
+        end
+    end)
+    call(self, opt(self.config, "OnLoaded", nil), self)
+end
+
+function Tab:AddContent(config)
+    assert(not self.destroyed, "Tab is destroyed")
+    config = config or {}
+    local frame = opt(config, "Instance", nil)
+    assert(
+        typeof(frame) == "Instance" and frame:IsA("GuiObject"),
+        "AddContent requires a GuiObject in Instance"
+    )
+    if opt(config, "Clone", false) then
+        frame = frame:Clone()
+    end
+    local item = {
+        tab = self,
+        window = self.window,
+        connections = {},
+        frame = frame,
+        side = side(opt(config, "Side", "left")),
+        destroyed = false,
+        kind = "custom",
+    }
+    frame.LayoutOrder = opt(config, "Order", #self.elements + 1)
+    frame.Parent = self.columns[item.side]
+    if opt(config, "FitWidth", true) then
+        frame.Size = UDim2.new(1, -2, frame.Size.Y.Scale, frame.Size.Y.Offset)
+    end
+    item.SetSide = elementSide
+    function item:Destroy()
+        if self.destroyed then
+            return
+        end
+        self.destroyed = true
+        self.frame:Destroy()
+        if not self.tab.destroyed then
+            self.tab:_Arrange()
+        end
+    end
+    table.insert(self.elements, item)
+    self:_Arrange()
+    return item
+end
+
+for class, names in pairs({
+    [Window] = {
+        "AddTab",
+        "SelectTab",
+        "SetVisible",
+        "Minimize",
+        "SetStatus",
+        "Destroy",
+        "Unload",
+    },
+    [Tab] = {
+        "AddGroup",
+        "AddPreview",
+        "AddContent",
+        "SetTitle",
+        "SetDescription",
+        "Destroy",
+    },
+    [Group] = {
+        "AddToggle",
+        "AddSlider",
+        "AddButton",
+        "AddTextbox",
+        "AddDropdown",
+        "AddLabel",
+        "AddText",
+        "SetSide",
+        "Destroy",
+    },
+    [Preview] = {
+        "SetTarget",
+        "GetTarget",
+        "IsInsideCircle",
+        "SetRadius",
+        "SetLineVisible",
+        "SetCircleVisible",
+        "SetRole",
+        "SetName",
+        "SetESPEnabled",
+        "SetNamesVisible",
+        "SetHighlightVisible",
+        "SetImage",
+        "SetSide",
+        "Destroy",
+    },
+}) do
+    for _, name in ipairs(names) do
+        class[name:lower()] = class[name]
+    end
+end
+Tab.AddSection = Tab.AddGroup
+Tab.addsection = Tab.AddGroup
+Window.CreateTab = Window.AddTab
+Tab.CreateGroup = Tab.AddGroup
+Tab.CreateTargetPreview = Tab.AddPreview
+Group.CreateToggle = Group.AddToggle
+Group.CreateSlider = Group.AddSlider
+Group.CreateButton = Group.AddButton
+Group.AddTextBox = Group.AddTextbox
+Group.CreateTextbox = Group.AddTextbox
+Group.CreateDropdown = Group.AddDropdown
+Group.CreateText = Group.AddText
+UI.createwindow = UI.CreateWindow
+return UI
+
+end
+
+local function applyPlayerData(data)
+    if not state.active or type(data) ~= "table" then
+        return false
+    end
+    local updated, updatedDead = {}, {}
+    for key, value in pairs(data) do
+        local role = type(value) == "table" and value.Role
+        if type(role) == "string" then
+            local subject
+            if typeof(key) == "Instance" and key:IsA("Player") then
+                subject = key
+            elseif type(key) == "string" then
+                subject = Players:FindFirstChild(key)
+            elseif type(key) == "number" then
+                subject = Players:GetPlayerByUserId(key)
+            end
+            if subject then
+                updated[subject.UserId] = role
+                updated[subject.Name] = role
+                local dead = value.Dead == true or value.Killed == true
+                updatedDead[subject.UserId], updatedDead[subject.Name] = dead, dead
+            elseif type(key) == "string" or type(key) == "number" then
+                updated[key] = role
+                updatedDead[key] = value.Dead == true or value.Killed == true
+            end
+        end
+    end
+    table.clear(roleCache)
+    for key, role in pairs(updated) do
+        roleCache[key] = role
+    end
+    table.clear(deadCache)
+    for key, dead in pairs(updatedDead) do
+        deadCache[key] = dead
+    end
+    return true
+end
+
+local function refreshRoleCache()
+    if not state.active then
+        return false
+    end
+    if usesRoleEvent then
+        local remotes = RS:FindFirstChild("Remotes")
+        local gameplay = remotes and remotes:FindFirstChild("Gameplay")
+        local event = gameplay and gameplay:FindFirstChild("PlayerDataChanged")
+        if
+            roleEventConnection
+            and roleEventConnection.Connected
+            and connectedRoleEvent == event
+        then
+            return true
+        end
+        if roleEventConnection then
+            roleEventConnection:Disconnect()
+        end
+        roleEventConnection, connectedRoleEvent = nil, nil
+        table.clear(roleCache)
+        table.clear(deadCache)
+        if not event or not event:IsA("RemoteEvent") then
+            return false
+        end
+        connectedRoleEvent = event
+        roleEventConnection = event.OnClientEvent:Connect(applyPlayerData)
+        return true
+    end
+    local remote = RS:FindFirstChild("GetPlayerData", true)
+    if not remote or not remote:IsA("RemoteFunction") then
+        return false
+    end
+    local ok, data = pcall(function()
+        return remote:InvokeServer()
+    end)
+    if not ok then
+        return false
+    end
+    return applyPlayerData(data)
+end
+
+local farm = {
+    bag = 0,
+    maximum = nil,
+    fullHandled = false,
+    full = false,
+    speed = 20,
+    bags = {},
+    uiSnapshots = {},
+    connections = {},
+}
+state.farm = farm
+
+local function updateFarmStatus(message)
+    if farm.label then
+        farm.label:SetText(
+            message .. " | Bag: " .. farm.bag .. "/" .. tostring(farm.maximum or "?")
+        )
+    end
+end
+
+local function releaseFarmMovement()
+    local movement = farm.movement
+    farm.movement = nil
+    if not movement then
+        return
+    end
+    for part, collision in pairs(movement.collisions) do
+        if part.Parent then
+            part.CanCollide = collision
+        end
+    end
+    if player.Character == movement.character and movement.root.Parent then
+        movement.root.AssemblyLinearVelocity = Vector3.zero
+        movement.root.AssemblyAngularVelocity = Vector3.zero
+        if movement.humanoid.Parent then
+            movement.humanoid.AutoRotate = movement.autoRotate
+            movement.humanoid.PlatformStand = movement.platformStand
+            if movement.humanoid.Health > 0 and not movement.platformStand then
+                movement.humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        end
+    end
+end
+
+farm.Release = releaseFarmMovement
+
+function farm.Stop()
+    releaseFarmMovement(true)
+    for _, connection in ipairs(farm.connections) do
+        connection:Disconnect()
+    end
+    table.clear(farm.connections)
+end
+
+local function farmBagFull()
+    return farm.full or (farm.maximum ~= nil and farm.bag >= farm.maximum)
+end
+
+local function setFarmBag(kind, current, maximum, uiFull)
+    local previous = farm.bags[kind]
+    local entry = {
+        current = current,
+        maximum = maximum or (previous and previous.maximum),
+        uiFull = uiFull == true,
+    }
+    farm.bags[kind] = entry
+    farm.bag, farm.maximum = current, entry.maximum
+    farm.full = false
+    for _, bag in pairs(farm.bags) do
+        if bag.uiFull or (bag.maximum and bag.current >= bag.maximum) then
+            farm.full = true
+            farm.bag, farm.maximum = bag.current, bag.maximum
+            break
+        end
+    end
+    if not farm.full then
+        farm.fullHandled = false
+    else
+        releaseFarmMovement()
+    end
+    updateFarmStatus(farm.full and "Bag full" or settings.autoFarm and "Farming" or "Idle")
+end
+
+local function scanFarmBagUI(baselineOnly)
+    if not state.roundKnown then return end
+    local gui = player:FindFirstChild("PlayerGui")
+    local main = gui and gui:FindFirstChild("MainGUI")
+    local gameFrame = main and main:FindFirstChild("Game")
+    local bags = gameFrame and gameFrame:FindFirstChild("CoinBags")
+    local container = bags and bags:FindFirstChild("Container")
+    if not container then
+        return
+    end
+    for _, bag in ipairs(container:GetChildren()) do
+        if bag:IsA("Frame") and bag.Visible then
+            local currency = bag:FindFirstChild("CurrencyFrame")
+            local icon = currency and currency:FindFirstChild("Icon")
+            local text = icon and icon:FindFirstChild("Coins")
+            local count = text and tonumber(text.Text)
+            local full = bag:FindFirstChild("Full")
+            local fullIcon = bag:FindFirstChild("FullBagIcon")
+            local isFull = (full and full.Visible == true)
+                or (fullIcon and fullIcon.Visible == true)
+                or false
+            if count then
+                local signature = tostring(count) .. ":" .. tostring(isFull)
+                if farm.uiSnapshots[bag.Name] ~= signature then
+                    farm.uiSnapshots[bag.Name] = signature
+                    if not baselineOnly then
+                        local previous = farm.bags[bag.Name]
+                        if not previous or isFull or not previous.authoritative then
+                            setFarmBag(bag.Name, count, nil, isFull)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function farmInMatch()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if
+        not character
+        or not character:IsDescendantOf(workspace)
+        or not humanoid
+        or humanoid.Health <= 0
+        or not root
+    then
+        return false
+    end
+    local role = roleCache[player.UserId] or roleCache[player.Name]
+    if type(role) ~= "string" then
+        return false
+    end
+    role = role:lower()
+    if
+        role == ""
+        or role == "unknown"
+        or role == "spectator"
+        or role == "lobby"
+        or role == "none"
+    then
+        return false
+    end
+    -- Infection conversion can keep normal-mode death flags on a living zombie.
+    -- The character/root/health checks above still apply; never revive a corpse.
+    local infected = role:find("zombie", 1, true) ~= nil or role == "infected"
+    if infected then
+        return true
+    end
+    if player:GetAttribute("Alive") == false then
+        return false
+    end
+    if deadCache[player.UserId] == true or deadCache[player.Name] == true then
+        return false
+    end
+    return deadCache[player.UserId] == false
+        or deadCache[player.Name] == false
+        or player:GetAttribute("Alive") == true
+end
+
+local function farmReady()
+    return state.active
+        and settings.autoFarm
+        and not state.hostActionBusy
+        and state.roundKnown
+        and farmInMatch()
+        and not state.flingTrip
+        and not state.gunPickupRunning
+        and not settings.touchFling
+        and not state.sheriffShot
+        and not state.knifeAction
+        and not (
+            state.connector
+            and (
+                state.connector.gameplayEffect
+                or state.connector.control
+                or os.clock() < (state.connector.gameplayPauseUntil or 0)
+            )
+        )
+end
+
+local function refreshFarmCoins(force)
+    if not force and farm.coins and os.clock() < (farm.scanAt or 0) then
+        return false
+    end
+    local coins, positions, seen = {}, {}, {}
+    for _, container in ipairs(workspace:GetDescendants()) do
+        if container.Name == "CoinContainer" then
+            for _, descendant in ipairs(container:GetDescendants()) do
+                local part = descendant:IsA("TouchTransmitter") and descendant.Parent
+                if part and part:IsA("BasePart") and not seen[part] then
+                    seen[part] = true
+                    positions[part] = part.Position
+                    table.insert(coins, part)
+                end
+            end
+        end
+    end
+    farm.coins, farm.coinPositions = coins, positions
+    farm.scanAt = os.clock() + 1
+    return true
+end
+
+local function prepareFarmPhysics(movement)
+    for _, part in ipairs(movement.character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if movement.collisions[part] == nil then
+                movement.collisions[part] = part.CanCollide
+            end
+            part.CanCollide = false
+        end
+    end
+    movement.humanoid.AutoRotate = false
+    movement.humanoid.PlatformStand = true
+    if movement.humanoid:GetState() ~= Enum.HumanoidStateType.Physics then
+        movement.humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+    end
+end
+
+-- Count real collection acknowledgements independently of GUI polling.
+local function recordFarmCollection(kind, current)
+    farm.eventCounts = farm.eventCounts or {}
+    local previous = farm.eventCounts[kind] or 0
+    farm.eventCounts[kind] = current
+    if current > previous then
+        farm.collectionRevision = (farm.collectionRevision or 0) + 1
+    end
+end
+
+local function farmCollectionConfirmed(coin, revision, root)
+    if not coin:IsDescendantOf(workspace) or not coin:FindFirstChildOfClass("TouchTransmitter") then
+        return true -- Gone/claimed already: choose another target immediately.
+    end
+    -- CoinCollected has no coin ID. Only associate an increase with a nearby target.
+    return (farm.collectionRevision or 0) > revision
+        and root and root.Parent ~= nil and (coin.Position - root.Position).Magnitude <= 6
+end
+
+local function waitForFarmCollection(coin, revision, root)
+    local deadline = os.clock() + 0.75
+    repeat
+        if farmCollectionConfirmed(coin, revision, root) or farmBagFull() then return true end
+        if not farmReady() or not root or not root.Parent
+            or (state.ClaimValid and not state.ClaimValid(coin)) then return false end
+        RunService.Heartbeat:Wait()
+    until os.clock() >= deadline
+    return false -- No acknowledgement: don't hang forever on a missed coin.
+end
+
+local function glideTo(position, targetCoin)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = humanoid and humanoid.RootPart
+    if not root or humanoid.Health <= 0 or not farmReady() or farmBagFull()
+        or not state.ClaimValid(targetCoin) then
+        return false
+    end
+    if not farm.movement then
+        farm.movement = {
+            character = character,
+            humanoid = humanoid,
+            root = root,
+            autoRotate = humanoid.AutoRotate,
+            platformStand = humanoid.PlatformStand,
+            collisions = {},
+            hold = root.CFrame,
+        }
+    end
+    local movement = farm.movement
+    if movement.character ~= character then
+        releaseFarmMovement(false)
+        return false
+    end
+    humanoid.AutoRotate = false
+    local activeSpeed = farm.speed
+    local deadline = os.clock() + (root.Position - position).Magnitude / activeSpeed + 3
+    movement.lastStepAt = os.clock()
+    local progressAt = os.clock()
+    local progressDistance = (root.Position - position).Magnitude
+    local collectionRevision = farm.collectionRevision or 0
+    while farmReady() and state.ClaimValid(targetCoin) and os.clock() < deadline do
+        if farm.speed ~= activeSpeed then
+            activeSpeed = farm.speed
+            deadline = os.clock() + (root.Position - position).Magnitude / activeSpeed + 3
+        end
+        if targetCoin and farmCollectionConfirmed(targetCoin, collectionRevision, root) then
+            return true
+        end
+        local refreshed = refreshFarmCoins(false)
+        if targetCoin then
+            if
+                not targetCoin:IsDescendantOf(workspace)
+                or not targetCoin:FindFirstChildOfClass("TouchTransmitter")
+                or not farm.coinPositions[targetCoin]
+            then
+                return false, "Coin no longer in CoinContainer"
+            end
+            if refreshed and (farm.coinPositions[targetCoin] - position).Magnitude > 0.75 then
+                return false, "Coin changed position; selecting another"
+            end
+        end
+        if player.Character ~= character or not root.Parent or humanoid.Health <= 0 then
+            return false
+        end
+        if farmBagFull() then
+            return false
+        end
+        prepareFarmPhysics(movement)
+        local delta = position - root.Position
+        if delta.Magnitude <= 0.25 then
+            return true
+        end
+        if progressDistance - delta.Magnitude >= 0.5 then
+            progressDistance = delta.Magnitude
+            progressAt = os.clock()
+        elseif os.clock() - progressAt >= 2 then
+            return false, "No movement progress"
+        end
+        local dt = RunService.Heartbeat:Wait()
+        if not farmReady() or farmBagFull() or farm.movement ~= movement
+            or not state.ClaimValid(targetCoin) then
+            return false
+        end
+        if player.Character ~= character or not root.Parent or humanoid.Health <= 0 then
+            return false
+        end
+        local now = os.clock()
+        local elapsed = math.max(0, math.min(dt, now - movement.lastStepAt, 0.1))
+        movement.lastStepAt = now
+        delta = position - root.Position
+        if delta.Magnitude <= 0.25 then
+            return true
+        end
+        local offset = delta.Unit * math.min(delta.Magnitude, farm.speed * elapsed)
+        character:PivotTo(character:GetPivot() + offset)
+        movement.hold = root.CFrame
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+    return false
+end
+
+local function onFarmFull()
+    releaseFarmMovement()
+    updateFarmStatus("Bag full; waiting for hosts")
+end
+
+local function startFarmObserver()
+    local remotes = RS:FindFirstChild("Remotes")
+    local gameplay = remotes and remotes:FindFirstChild("Gameplay")
+    local collected = gameplay and gameplay:FindFirstChild("CoinCollected")
+    local started = gameplay and gameplay:FindFirstChild("CoinsStarted")
+    if not collected or not started then
+        updateFarmStatus("Coin events unavailable")
+        return
+    end
+    table.insert(
+        farm.connections,
+        collected.OnClientEvent:Connect(function(kind, current, maximum)
+            if
+                type(kind) ~= "string"
+                or type(current) ~= "number"
+                or type(maximum) ~= "number"
+                or current ~= current
+                or maximum ~= maximum
+                or current < 0
+                or maximum <= 0
+                or math.abs(current) == math.huge
+                or math.abs(maximum) == math.huge
+            then
+                return
+            end
+            if not state.roundKnown then return end
+            recordFarmCollection(kind, current)
+            setFarmBag(kind, current, maximum, false)
+            farm.bags[kind].authoritative = true
+        end)
+    )
+    table.insert(
+        farm.connections,
+        started.OnClientEvent:Connect(function()
+            if state.ReleaseClaim then state.ReleaseClaim(true) end
+            state.mapVoteSignature = nil
+            state.roundStamp = workspace:GetServerTimeNow()
+            state.reports = {}
+            state.lastSync = 0
+            state.roundKnown = true
+            farm.bag, farm.maximum, farm.fullHandled, farm.full = 0, nil, false, false
+            table.clear(farm.bags)
+            farm.eventCounts = {}
+            farm.advanceNow = false
+            table.clear(farm.uiSnapshots)
+            scanFarmBagUI(true)
+            farm.coins, farm.scanAt = nil, 0
+            releaseFarmMovement(true)
+            updateFarmStatus("New round")
+        end)
+    )
+    scanFarmBagUI(false)
+    local nextBagUIScan = 0
+    table.insert(
+        farm.connections,
+        RunService.PreSimulation:Connect(function()
+            if os.clock() >= nextBagUIScan then
+                nextBagUIScan = os.clock() + 0.2
+                scanFarmBagUI(false)
+            end
+            if farmBagFull() or not farmInMatch()
+                or (farm.movement and (not state.claim or not state.ClaimValid(state.claim.coin))) then
+                releaseFarmMovement()
+                return
+            end
+            local movement = farm.movement
+            if
+                movement
+                and movement.hold
+                and farmReady()
+                and player.Character == movement.character
+                and movement.root.Parent
+                and movement.humanoid.Health > 0
+            then
+                prepareFarmPhysics(movement)
+                movement.root.CFrame = movement.hold
+                movement.root.AssemblyLinearVelocity = Vector3.zero
+                movement.root.AssemblyAngularVelocity = Vector3.zero
+            end
+        end)
+    )
+    task.spawn(function()
+        local cooldown = setmetatable({}, { __mode = "k" })
+        while state.active do
+            if farm.advanceNow then
+                farm.advanceNow = false
+                RunService.Heartbeat:Wait()
+            else
+                task.wait(0.15)
+            end
+            if not farmReady() then
+                state.ReleaseClaim()
+                releaseFarmMovement(not state.flingTrip and not state.gunPickupRunning)
+                if settings.autoFarm and not state.roundKnown then
+                    updateFarmStatus("Waiting for the next round")
+                elseif settings.autoFarm and not farmInMatch() then
+                    updateFarmStatus("Waiting for an active match")
+                end
+                continue
+            end
+            local ok, message = xpcall(function()
+                if farmBagFull() then
+                    onFarmFull()
+                    return
+                end
+                local character = player.Character
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                local root = humanoid and humanoid.RootPart
+                if not root or humanoid.Health <= 0 then
+                    releaseFarmMovement(false)
+                    return
+                end
+                refreshFarmCoins(false)
+                local candidates = {}
+                for _, coin in ipairs(farm.coins) do
+                    if
+                        coin:IsDescendantOf(workspace)
+                        and farm.coinPositions[coin] ~= nil
+                        and coin:FindFirstChildOfClass("TouchTransmitter")
+                        and os.clock() >= (cooldown[coin] or 0)
+                    then
+                        table.insert(candidates, { coin = coin, distance = (coin.Position - root.Position).Magnitude })
+                    end
+                end
+                table.sort(candidates, function(a, b) return a.distance < b.distance end)
+                -- Keep each reservation local: shortlist the nearest 12 coins within
+                -- 40 studs of the closest candidate's distance. Wait if all are busy.
+                local nearby = {}
+                local limit = candidates[1] and candidates[1].distance + 40 or 0
+                for _, candidate in ipairs(candidates) do
+                    if #nearby >= 12 or candidate.distance > limit then break end
+                    table.insert(nearby, candidate)
+                end
+                releaseFarmMovement()
+                local nearest = state.ClaimCoin(nearby)
+                if not nearest then
+                    releaseFarmMovement(true)
+                    updateFarmStatus("Waiting for a nearby unclaimed coin")
+                    task.wait(0.75)
+                    return
+                end
+                updateFarmStatus(state.claim and state.claim.offline
+                    and "Farming offline (unreserved)" or "Farming (reserved)")
+                local destination = nearest.Position
+                local collectionRevision = farm.collectionRevision or 0
+                local arrived = glideTo(destination, nearest)
+                cooldown[nearest] = os.clock() + (arrived and 3 or 10)
+                if arrived and farmCollectionConfirmed(nearest, collectionRevision, root) then
+                    farm.advanceNow = true
+                end
+                if not arrived then
+                    releaseFarmMovement()
+                    farm.scanAt = 0
+                    updateFarmStatus("Trying another coin")
+                end
+                if
+                    arrived
+                    and farmReady()
+                    and not farmBagFull()
+                    and state.ClaimValid(nearest)
+                    and nearest:IsDescendantOf(workspace)
+                then
+                    local touching = false
+                    if not farmCollectionConfirmed(nearest, collectionRevision, root)
+                        and type(firetouchinterest) == "function" then
+                        touching = pcall(firetouchinterest, root, nearest, 0)
+                    end
+                    farm.advanceNow = waitForFarmCollection(nearest, collectionRevision, root)
+                    if touching then pcall(firetouchinterest, root, nearest, 1) end
+                    cooldown[nearest] = os.clock() + 3
+                end
+            end, debug.traceback)
+            state.ReleaseClaim()
+            if not ok then
+                releaseFarmMovement(true)
+                warn("Daxware farm: " .. tostring(message))
+                updateFarmStatus("Farm error; retrying")
+                task.wait(1)
+            end
+        end
+        state.ReleaseClaim()
+        releaseFarmMovement(true)
+    end)
+end
+
+local function skipFarmTarget(subject) return subject == player end
+local function getRole(subject)
+    local role = roleCache[subject.UserId] or roleCache[subject.Name]
+    if type(role) ~= "string" then return "Unknown" end
+    local canonical = { murderer = "Murderer", sheriff = "Sheriff", hero = "Hero", innocent = "Innocent" }
+    return canonical[role:lower()] or role
+end
+
+local function installFarmShotHooks()
+    local services = RS:FindFirstChild("ClientServices")
+    local module = services and services:FindFirstChild("WeaponService")
+    if not module then return nil, "WeaponService is unavailable" end
+    local loaded, service = pcall(require, module)
+    if not loaded or type(service) ~= "table" then return nil, "Could not load WeaponService" end
+    if type(service.GetMouseTargetCFrame) ~= "function" or type(service.GetTargetPosition) ~= "function" then
+        return nil, "WeaponService aiming methods are unavailable"
+    end
+    local mouseOriginal, positionOriginal = service.GetMouseTargetCFrame, service.GetTargetPosition
+    local function aim()
+        local shot = state.sheriffShot
+        return shot and shot.Update()
+    end
+    local function mouseWrapper(self, ...)
+        local target = aim()
+        if target then return target end
+        return mouseOriginal(self, ...)
+    end
+    local function positionWrapper(self, ...)
+        local target = aim()
+        if target then return target end
+        return positionOriginal(self, ...)
+    end
+    local hooks, connection = {}, nil
+    state.hostWeaponHooks = hooks
+    function hooks.Restore()
+        if connection then connection:Disconnect() end
+        if service.GetMouseTargetCFrame == mouseWrapper then service.GetMouseTargetCFrame = mouseOriginal end
+        if service.GetTargetPosition == positionWrapper then service.GetTargetPosition = positionOriginal end
+        if state.hostWeaponHooks == hooks then state.hostWeaponHooks = nil end
+    end
+    service.GetMouseTargetCFrame, service.GetTargetPosition = mouseWrapper, positionWrapper
+    connection = RunService.PreSimulation:Connect(function() pcall(aim) end)
+    return hooks
+end
+
+
+local function createMurdererShot()
+    local character = player.Character
+    local gun = character and character:FindFirstChild("Gun")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local attachment = root and root:FindFirstChild("GunRaycastAttachment")
+    if not gun or not gun:IsA("Tool") then
+        return nil, "Equip your gun first"
+    end
+    if not humanoid or humanoid.Health <= 0 then
+        return nil, "No living character"
+    end
+    if not attachment or not attachment:IsA("Attachment") then
+        return nil, "Gun attachment missing"
+    end
+    local target
+    for _, subject in ipairs(Players:GetPlayers()) do
+        local other = subject.Character
+        local health = other and other:FindFirstChildOfClass("Humanoid")
+        if
+            subject ~= player
+            and not skipFarmTarget(subject)
+            and getRole(subject) == "Murderer"
+            and health
+            and health.Health > 0
+            and other:FindFirstChild("HumanoidRootPart")
+            and subject:GetAttribute("Alive") ~= false
+            and deadCache[subject.UserId] ~= true
+            and deadCache[subject.Name] ~= true
+        then
+            target = subject
+            break
+        end
+    end
+    if not target then
+        return nil, "No living murderer detected"
+    end
+    local targetCharacter = target.Character
+    local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+    local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+    local originalAttachment = attachment.CFrame
+    local direction = targetRoot.Position - root.Position
+    direction = direction.Magnitude < 0.001 and Vector3.new(0, 0, -1) or direction.Unit
+    local shot = { cancelled = false, gun = gun }
+    function shot.Valid()
+        return state.active and settings.hostShootMurderer and state.selectedHosts[player.UserId] ~= nil
+            and not shot.cancelled
+            and player.Character == character
+            and target.Parent == Players
+            and not skipFarmTarget(target)
+            and target.Character == targetCharacter
+            and gun.Parent == character
+            and attachment.Parent == root
+            and targetRoot.Parent ~= nil
+            and targetCharacter:IsDescendantOf(workspace)
+            and humanoid.Health > 0
+            and targetHumanoid.Health > 0
+            and target:GetAttribute("Alive") ~= false
+            and deadCache[target.UserId] ~= true
+            and deadCache[target.Name] ~= true
+            and getRole(target) == "Murderer"
+    end
+    function shot.Cancel()
+        if shot.cancelled then
+            return
+        end
+        shot.cancelled = true
+        pcall(function()
+            attachment.CFrame = originalAttachment
+        end)
+        if state.sheriffShot == shot then
+            pcall(function()
+                gun:Deactivate()
+            end)
+            state.sheriffShot = nil
+        end
+        if state.autoShot == shot then
+            state.autoShot = nil
+        end
+    end
+    function shot.Update()
+        if not shot.Valid() then
+            shot.Cancel()
+            return nil
+        end
+        local center = targetRoot.Position
+        local localDirection = targetRoot.CFrame:VectorToObjectSpace(direction)
+        local half = targetRoot.Size / 2
+        local boundary = math.huge
+        for _, axis in ipairs({ "X", "Y", "Z" }) do
+            local component = math.abs(localDirection[axis])
+            if component > 0.00001 then
+                boundary = math.min(boundary, half[axis] / component)
+            end
+        end
+        local origin = center - direction * (boundary + 1)
+        attachment.WorldCFrame = CFrame.lookAt(origin, center)
+        return CFrame.new(center)
+    end
+    return shot
+end
+
+local function shootMurderer()
+    if not state.active then
+        return false, "Script is unloaded"
+    end
+    if state.sheriffShot then
+        return false, "A shot is already running"
+    end
+    if state.autoShot then
+        state.autoShot.Cancel()
+    end
+    local shot, reason = createMurdererShot()
+    if not shot then
+        return false, reason
+    end
+    state.sheriffShot = shot
+    local hooks, reason = installFarmShotHooks()
+    if not hooks then shot.Cancel(); return false, reason end
+    state.hostWeaponHooks = hooks
+    local ok, err = pcall(function()
+        if not shot.Update() then
+            return
+        end
+        shot.gun:Activate()
+        task.wait(0.35)
+    end)
+    shot.Cancel()
+    hooks.Restore()
+    return ok, ok and "Gun activated toward murderer" or tostring(err)
+end
+
+local function knifeEveryone(alreadyActivated, selectedTarget)
+    if not state.active then
+        return false, "Script is unloaded"
+    end
+    if state.knifeAction then
+        return false, "Knife action is already running"
+    end
+    if
+        selectedTarget
+        and (
+            selectedTarget.Parent ~= Players
+            or selectedTarget == player
+            or skipFarmTarget(selectedTarget)
+        )
+    then
+        return false, "Selected player is unavailable or whitelisted"
+    end
+    local character = player.Character
+    local tool = character and character:FindFirstChild("Knife")
+    local handle = tool and tool:FindFirstChild("Handle")
+    if not tool or not tool:IsA("Tool") then
+        return false, "Equip your knife first"
+    end
+    if not handle or not handle:IsA("BasePart") then
+        return false, "Knife handle unavailable"
+    end
+    if type(firetouchinterest) ~= "function" then
+        return false, "firetouchinterest unavailable"
+    end
+    local action = { cancelled = false }
+    state.knifeAction = action
+    function action.Cancel()
+        action.cancelled = true
+        pcall(function()
+            tool:Deactivate()
+        end)
+    end
+    local attempted = 0
+    local ok, err = pcall(function()
+        if not alreadyActivated then
+            tool:Activate()
+        end
+        task.wait(0.1)
+        local targets = selectedTarget and { selectedTarget } or Players:GetPlayers()
+        for _, target in ipairs(targets) do
+            if
+                not state.active or not settings.hostKillAll or not state.selectedHosts[player.UserId]
+                or action.cancelled
+                or player.Character ~= character
+                or tool.Parent ~= character
+                or not handle.Parent
+            then
+                break
+            end
+            if target == player or skipFarmTarget(target) then
+                continue
+            end
+            local targetCharacter = target.Character
+            local humanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+            local root = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+            if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+                local began, touchError = pcall(firetouchinterest, handle, root, 0)
+                if began then
+                    task.wait()
+                    local ended, endError = pcall(firetouchinterest, handle, root, 1)
+                    attempted += 1
+                    if not ended and state.active then
+                    end
+                elseif state.active then
+                end
+            end
+        end
+    end)
+    action.Cancel()
+    if state.knifeAction == action then
+        state.knifeAction = nil
+    end
+    return ok, ok and ("Touch pairs sent: " .. attempted) or tostring(err)
+end
+
+
+local hostDropdown, hostsLabel, networkLabel, resetLabel, hostActionLabel, mapVoteLabel
+local sendRequest = request or http_request or (syn and syn.request)
+local function selectedNames()
+    local result = {}
+    for id in pairs(state.selectedHosts) do
+        local subject = Players:GetPlayerByUserId(id)
+        table.insert(result, subject and subject.Name or ("User " .. tostring(id) .. " (left)"))
+    end
+    table.sort(result)
+    return result
+end
+
+local function refreshHostOptions()
+    if not hostDropdown or not state.active then return end
+    local names = {}
+    for _, subject in ipairs(Players:GetPlayers()) do table.insert(names, subject.Name) end
+    -- Keep disconnected selections visible and blocking until explicitly deselected.
+    for id, name in pairs(state.selectedHosts) do
+        if not Players:GetPlayerByUserId(id) and not table.find(names, name) then table.insert(names, name) end
+    end
+    table.sort(names)
+    hostDropdown:SetOptions(names, true)
+    local chosen = {}
+    for _, name in pairs(state.selectedHosts) do table.insert(chosen, name) end
+    hostDropdown:Set(chosen, true)
+end
+
+local function hostReadiness()
+    if not state.SocketHealthy() then return false, "Offline: host resets paused" end
+    if not state.roundKnown then return false, "Waiting for the next round" end
+    if next(state.selectedHosts) == nil then return false, "Select at least one host" end
+    if os.clock() - state.lastSync > 35 then return false, "Waiting for fresh host reports" end
+    local total, full = 0, 0
+    for id, name in pairs(state.selectedHosts) do
+        total += 1
+        local report = state.reports[id]
+        if not Players:GetPlayerByUserId(id) then return false, name .. " left the server" end
+        if not report or os.clock() - report.receivedAt + report.age > 45 then
+            return false, "Waiting for " .. name .. " to report"
+        end
+        if not report.roundStamp or math.abs(report.roundStamp - state.roundStamp) > 5 then
+            return false, name .. ": waiting for this round"
+        end
+        if report.known and report.full then full += 1 end
+    end
+    return total > 0 and full == total, tostring(full) .. "/" .. tostring(total) .. " hosts full"
+end
+
+-- Potassium documents WebSocket.connect, OnMessage, OnClose, Send and Close.
+-- HTTP is used only to mint a short-lived connection ticket, never to poll.
+local socketState = { connected = false, generation = 0, counter = 0, pending = {}, connections = {}, lastRx = 0 }
+state.transport = socketState
+
+local function acceptSnapshot(data)
+    if type(data) ~= "table" or type(data.serverTime) ~= "number" or type(data.reports) ~= "table" then return end
+    local reports = {}
+    for _, report in ipairs(data.reports) do
+        if type(report) == "table" and type(report.userId) == "number" and type(report.seenAt) == "number" then
+            reports[report.userId] = {
+                full = report.full == true, known = report.known == true, inMatch = report.inMatch == true,
+                roundStamp = type(report.roundStamp) == "number" and report.roundStamp or nil,
+                age = math.max(0, (data.serverTime - report.seenAt) / 1000), receivedAt = os.clock(),
+            }
+        end
+    end
+    state.reports, state.lastSync = reports, os.clock()
+end
+
+function state.SocketHealthy()
+    return state.active and socketState.connected and os.clock() - socketState.lastRx < 35
+end
+
+function state.CloseSocket(reason)
+    socketState.connected = false
+    socketState.generation += 1
+    state.reports, state.lastSync = {}, 0
+    state.claim, state.pendingClaimRelease = nil, nil
+    if state.farm then state.farm.Release() end
+    for _, pending in pairs(socketState.pending) do pending.error = reason or "Disconnected"; pending.done = true end
+    socketState.pending = {}
+    for _, connection in ipairs(socketState.connections) do connection:Disconnect() end
+    socketState.connections = {}
+    local socket = socketState.socket
+    socketState.socket = nil
+    if socket then pcall(function() socket:Close() end) end
+    if networkLabel and state.active then
+        networkLabel:SetText("Offline autofarm | No reservations; host resets paused")
+    end
+end
+
+function state.SocketRPC(kind, payload)
+    assert(state.SocketHealthy(), "Worker disconnected; using normal autofarm")
+    socketState.counter += 1
+    local id = tostring(socketState.generation) .. ":" .. tostring(socketState.counter)
+    local pending = { sentAt = os.clock() }
+    socketState.pending[id] = pending
+    local ok = pcall(function()
+        socketState.socket:Send(HttpService:JSONEncode({ id = id, type = kind, data = payload or {} }))
+    end)
+    if not ok then state.CloseSocket("WebSocket send failed") end
+    while not pending.done and state.active and os.clock() - pending.sentAt < 5 do task.wait(0.03) end
+    socketState.pending[id] = nil
+    if not pending.done then
+        state.CloseSocket("Worker response timed out")
+        error("Worker response timed out; using normal autofarm")
+    end
+    assert(not pending.error, pending.error)
+    if pending.response and (pending.response.status == 429 or pending.response.status == 503) then
+        state.CloseSocket("Worker capacity unavailable")
+    end
+    assert(pending.response and pending.response.ok, "Worker message HTTP " .. tostring(pending.response and pending.response.status))
+    return pending.response.data, pending.sentAt
+end
+
+local function connectSocket()
+    local api = WebSocket or websocket or (syn and syn.websocket)
+    assert(api and type(api.connect) == "function", "WebSocket.connect unavailable; using normal autofarm")
+    assert(type(sendRequest) == "function", "request() unavailable; using normal autofarm")
+    assert(#FARM_KEY >= 32 and not FARM_KEY:find("REPLACE_WITH", 1, true), "Configure FARM_KEY; using normal autofarm")
+    assert(game.JobId ~= "", "Join a live server first")
+    local ticketResponse = sendRequest({
+        Url = WORKER_URL:gsub("/+$", "") .. "/v2/session", Method = "POST", Timeout = 8,
+        Headers = { ["Content-Type"] = "application/json", Authorization = "Bearer " .. FARM_KEY },
+        Body = HttpService:JSONEncode({ placeId = game.PlaceId, jobId = game.JobId,
+            userId = player.UserId, name = player.Name, session = state.session }),
+    })
+    assert(type(ticketResponse) == "table" and tonumber(ticketResponse.StatusCode) == 200,
+        "Connection ticket HTTP " .. tostring(ticketResponse and ticketResponse.StatusCode or "unavailable"))
+    local data = HttpService:JSONDecode(ticketResponse.Body or "")
+    assert(type(data.ticket) == "string", "Worker did not return a connection ticket")
+    if not state.active then return end
+    local url = WORKER_URL:gsub("/+$", ""):gsub("^https:", "wss:"):gsub("^http:", "ws:")
+        .. "/v2/socket?ticket=" .. HttpService:UrlEncode(data.ticket)
+    local socket = api.connect(url)
+    if not state.active then pcall(function() socket:Close() end); return end
+    socketState.socket = socket
+    socketState.generation += 1
+    local generation = socketState.generation
+    socketState.lastRx = os.clock()
+    table.insert(socketState.connections, socket.OnMessage:Connect(function(message)
+        if socketState.generation ~= generation then return end
+        local decoded, value = pcall(HttpService.JSONDecode, HttpService, message)
+        if not decoded or type(value) ~= "table" then return end
+        socketState.lastRx = os.clock()
+        if state.HandleEmergencyKick(value) then return end
+        if value.type == "snapshot" then acceptSnapshot(value.data) end
+        local pending = value.id and socketState.pending[value.id]
+        if pending then
+            pending.response, pending.done = value, true
+            if value.ok and value.data and value.data.reports then acceptSnapshot(value.data) end
+        end
+    end))
+    table.insert(socketState.connections, socket.OnClose:Connect(function()
+        if socketState.generation == generation then state.CloseSocket("Worker connection closed") end
+    end))
+    -- Drop an offline target before returning to shared reservations.
+    state.claim, state.pendingClaimRelease = nil, nil
+    releaseFarmMovement()
+    socketState.connected = true
+    state.lastReportSignature = nil
+    -- Verify the DO can process messages before treating an upgrade as recovery.
+    state.SocketRPC("heartbeat", {})
+    networkLabel:SetText("Worker connected | Shared reservations active")
+end
+
+local function startSocketTransport()
+    task.spawn(function()
+        local backoff = 2
+        local lastHeartbeat = 0
+        while state.active do
+            if not socketState.connected then
+                local ok, err = pcall(connectSocket)
+                if not state.active then break end
+                if not ok then
+                    state.CloseSocket(tostring(err))
+                    networkLabel:SetText("Offline autofarm | " .. tostring(err):gsub("^.-:%d+: ", ""))
+                    local retryAt = os.clock() + backoff + math.random()
+                    while state.active and os.clock() < retryAt do task.wait(0.25) end
+                    backoff = math.min(backoff * 2, 300)
+                else backoff, lastHeartbeat = 2, os.clock() end
+            elseif not state.SocketHealthy() then
+                state.CloseSocket("Connection went stale")
+            elseif os.clock() - lastHeartbeat >= 20 then
+                local ok = pcall(state.SocketRPC, "heartbeat", {})
+                if not ok then state.CloseSocket("Heartbeat failed") end
+                lastHeartbeat = os.clock()
+            end
+            task.wait(0.25)
+        end
+    end)
+end
+
+local function syncReports()
+    if not state.SocketHealthy() then return end
+    local known = state.roundKnown and next(farm.bags) ~= nil
+    local payload = {
+        sequence = state.sequence + 1, inMatch = farmInMatch(), autoFarm = settings.autoFarm,
+        known = known, full = known and farmBagFull() or false,
+        bag = farm.bag, maximum = farm.maximum, roundStamp = state.roundStamp,
+    }
+    -- Coin count changes do not affect the reset condition. Send known/full/round/
+    -- alive changes, and let the 20-second connection heartbeat maintain freshness.
+    local signature = table.concat({ tostring(payload.inMatch), tostring(payload.autoFarm),
+        tostring(payload.known), tostring(payload.full), tostring(payload.roundStamp) }, "|")
+    if state.lastReportSignature == signature then return end
+    state.sequence = payload.sequence
+    local generation = state.transport.generation
+    state.SocketRPC("report", payload)
+    if generation == state.transport.generation then state.lastReportSignature = signature end
+end
+
+-- One nearby coin at a time. Healthy connections use atomic Worker leases;
+-- disconnected clients continue ordinary local autofarming without reservations.
+local function claimRequest(action, extra, roundStamp)
+    local payload = { action = action, roundStamp = roundStamp }
+    for key, value in pairs(extra) do payload[key] = value end
+    return state.SocketRPC("claim", payload)
+end
+
+function state.ClaimValid(coin)
+    local claim = state.claim
+    if not state.active or not claim or claim.roundStamp ~= state.roundStamp or claim.coin ~= coin then return false end
+    if claim.offline then return not state.SocketHealthy() end
+    return state.SocketHealthy() and os.clock() < claim.expiresAt
+end
+
+function state.ReleaseClaim(immediate)
+    local claim = state.claim
+    state.claim = nil
+    if not claim or claim.offline then return end
+    state.pendingClaimRelease = claim
+    local function sendRelease()
+        if state.pendingClaimRelease ~= claim then return end
+        state.pendingClaimRelease = nil
+        if state.SocketHealthy() then pcall(claimRequest, "release", { token = claim.token }, claim.roundStamp) end
+    end
+    if immediate then task.spawn(sendRelease) else task.delay(0.75, sendRelease) end
+end
+
+local function localTarget(candidates)
+    local candidate = candidates[1]
+    local coin = candidate and candidate.coin
+    if not coin or not farmReady() or farmBagFull() or not coin:IsDescendantOf(workspace) then return nil end
+    state.claim = { coin = coin, offline = true, roundStamp = state.roundStamp }
+    updateFarmStatus("Normal autofarm (offline)")
+    return coin
+end
+
+function state.ClaimCoin(candidates)
+    if not farmReady() or farmBagFull() then return nil end
+    state.ReleaseClaim()
+    if not state.SocketHealthy() then return localTarget(candidates) end
+    local options, byId = {}, {}
+    for _, candidate in ipairs(candidates) do
+        if #options >= 12 then break end
+        local position = farm.coinPositions[candidate.coin]
+        local id = string.format("%d:%d:%d", math.round(position.X), math.round(position.Y), math.round(position.Z))
+        if not byId[id] then
+            byId[id] = candidate.coin
+            table.insert(options, { id = id, x = position.X, y = position.Y, z = position.Z })
+        end
+    end
+    if #options == 0 then return nil end
+    local previous = state.pendingClaimRelease
+    state.pendingClaimRelease = nil
+    local round, character = state.roundStamp, player.Character
+    local ok, data, sentAt = pcall(claimRequest, "acquire", {
+        candidates = options, previousToken = previous and previous.token or nil,
+    }, round)
+    if not ok then
+        if state.SocketHealthy() then
+            -- An application error isn't an outage; keep a live server lease isolated.
+            if previous then state.pendingClaimRelease = previous; task.delay(0.75, function()
+                if state.pendingClaimRelease == previous then
+                    state.pendingClaimRelease = nil
+                    pcall(claimRequest, "release", { token = previous.token }, previous.roundStamp)
+                end
+            end) end
+            error(data)
+        end
+        if state.roundStamp ~= round or player.Character ~= character then return nil end
+        return localTarget(candidates)
+    end
+    if data.busy then return nil end
+    local coin = byId[data.coinId]
+    assert(coin and type(data.token) == "string" and type(data.ttlMs) == "number"
+        and data.ttlMs > 2000 and data.ttlMs <= 30000, "Invalid Worker coin lease")
+    state.claim = { coin = coin, token = data.token, roundStamp = round,
+        expiresAt = sentAt + data.ttlMs / 1000 - 2 }
+    if not state.active or state.roundStamp ~= round or player.Character ~= character
+        or not farmReady() or farmBagFull() or not coin:IsDescendantOf(workspace) then
+        state.ReleaseClaim(true)
+        return nil
+    end
+    return coin
+end
+
+task.spawn(function()
+    while state.active do
+        task.wait(0.25)
+        local claim = state.claim
+        if claim and not claim.offline then
+            if not farmReady() or farmBagFull() or not claim.coin:IsDescendantOf(workspace)
+                or not state.ClaimValid(claim.coin) then
+                state.ReleaseClaim(true)
+                releaseFarmMovement()
+            elseif os.clock() - (claim.lastRenewed or (claim.expiresAt - 28)) >= 10 then
+                local ok, data, sentAt = pcall(claimRequest, "renew", { token = claim.token }, claim.roundStamp)
+                if state.claim == claim then
+                    if ok and state.ClaimValid(claim.coin) and data.token == claim.token
+                        and type(data.ttlMs) == "number" and data.ttlMs > 2000 and data.ttlMs <= 30000 then
+                        claim.expiresAt, claim.lastRenewed = sentAt + data.ttlMs / 1000 - 2, sentAt
+                    else
+                        state.ReleaseClaim(true)
+                        releaseFarmMovement()
+                    end
+                end
+            end
+        end
+    end
+end)
+
+
+local function desiredHostAction(role, isHost, allFull)
+    if not isHost or not allFull or type(role) ~= "string" then return nil end
+    role = role:lower()
+    if role == "murderer" and settings.hostKillAll then return "knife" end
+    if role == "sheriff" and settings.hostShootMurderer then return "shot" end
+    return nil
+end
+
+local function startHostBagAction()
+    local ready = hostReadiness()
+    local action = desiredHostAction(getRole(player), state.selectedHosts[player.UserId] ~= nil, ready)
+    local round = state.roundStamp
+    if not action or not farmInMatch() or state.hostActionRound == round then return false end
+    if state.hostActionBusy then return true end
+    state.hostActionBusy = true
+    task.spawn(function()
+        local succeeded, message
+        local ok, err = xpcall(function()
+            pcall(refreshRoleCache)
+            local stillReady = hostReadiness()
+            local current = desiredHostAction(getRole(player), state.selectedHosts[player.UserId] ~= nil, stillReady)
+            if not state.active or state.roundStamp ~= round or current ~= action or not farmInMatch() then return end
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local name = action == "knife" and "Knife" or "Gun"
+            local backpack = player:FindFirstChildOfClass("Backpack")
+            local tool = character and character:FindFirstChild(name) or backpack and backpack:FindFirstChild(name)
+            if not humanoid or humanoid.Health <= 0 or not tool or not tool:IsA("Tool") then
+                message = name .. " unavailable for host action"
+                state.hostActionRound = round
+                return
+            end
+            state.ReleaseClaim(true)
+            releaseFarmMovement()
+            humanoid:EquipTool(tool)
+            RunService.Heartbeat:Wait()
+            local enabled = action == "knife" and settings.hostKillAll or action == "shot" and settings.hostShootMurderer
+            if not state.active or not enabled or state.roundStamp ~= round or player.Character ~= character
+                or not state.selectedHosts[player.UserId] or not hostReadiness() or tool.Parent ~= character then return end
+            state.hostActionRound = round -- one attempt per host/round, regardless of server result
+            if action == "knife" then succeeded, message = knifeEveryone()
+            else succeeded, message = shootMurderer() end
+        end, debug.traceback)
+        if state.sheriffShot then state.sheriffShot.Cancel() end
+        if state.hostWeaponHooks then state.hostWeaponHooks.Restore() end
+        if state.knifeAction then state.knifeAction.Cancel(); state.knifeAction = nil end
+        state.hostActionBusy = false
+        if state.active and (message or not ok) then
+            hostActionLabel:SetText((succeeded and "Host action attempted: " or "Host action: ") .. tostring(message or err))
+        end
+    end)
+    return true
+end
+
+local function chooseSafeVote(entries)
+    local barn, choices, signature = false, {}, {}
+    for index = 1, 3 do
+        local entry = entries[index]
+        if not entry or not entry.available or type(entry.name) ~= "string" then return nil end
+        local name = entry.name:match("^%s*(.-)%s*$"):lower()
+        if name == "" then return nil end
+        table.insert(signature, name)
+        if name == "barn" then barn = true
+        else table.insert(choices, { index = index, name = name }) end
+    end
+    if not barn then return nil, "No Barn offered" end
+    table.sort(choices, function(a, b) return a.name == b.name and a.index < b.index or a.name < b.name end)
+    return choices[1] and choices[1].index, table.concat(signature, "|")
+end
+
+local function updateMapVote()
+    if not state.active or not settings.avoidInfection then return end
+    if farmInMatch() or state.hostActionBusy then return end
+    local lobby = workspace:FindFirstChild("Lobby")
+    local pads = lobby and lobby:FindFirstChild("VotePads")
+    if not pads then state.mapVoteSignature = nil; return end
+    local entries = {}
+    for index = 1, 3 do
+        local padModel = pads:FindFirstChild("VotePad" .. index)
+        local gui = padModel and padModel:FindFirstChild("VoteInfoGui")
+        local container = gui and gui:FindFirstChild("Container")
+        local label = container and container:FindFirstChild("MapName")
+        local pad = padModel and padModel:FindFirstChild("Pad")
+        local visible = gui and (not gui:IsA("LayerCollector") or gui.Enabled)
+            and container and (not container:IsA("GuiObject") or container.Visible)
+            and label and label:IsA("TextLabel") and label.Visible
+        entries[index] = { name = label and label:IsA("TextLabel") and label.Text or "",
+            available = visible and pad and pad:IsA("BasePart"), pad = pad }
+    end
+    local index, signature = chooseSafeVote(entries)
+    if not index then
+        state.mapVoteSignature = nil
+        mapVoteLabel:SetText(signature == "No Barn offered" and "No Barn offered; vote unchanged" or "Waiting for voting pads")
+        return
+    end
+    if signature == state.mapVoteSignature then return end
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid or humanoid.Health <= 0 then return end
+    local pad = entries[index].pad
+    -- Avoid teleporting an active/stranded match character back to the lobby.
+    if (root.Position - pad.Position).Magnitude > 150 then return end
+    state.ReleaseClaim(true)
+    releaseFarmMovement()
+    character:PivotTo(pad.CFrame + Vector3.new(0, pad.Size.Y / 2 + 3, 0))
+    state.mapVoteSignature = signature
+    mapVoteLabel:SetText("Voted " .. entries[index].name .. " (avoiding Barn)")
+    if type(firetouchinterest) == "function" then
+        pcall(firetouchinterest, root, pad, 0)
+        RunService.Heartbeat:Wait()
+        pcall(firetouchinterest, root, pad, 1)
+    end
+end
+
+task.spawn(function()
+    while state.active do
+        local ok, err = pcall(updateMapVote)
+        if not ok and state.active then mapVoteLabel:SetText("Map vote: " .. tostring(err)) end
+        task.wait(0.5)
+    end
+end)
+
+
+local initialized, failure = xpcall(function()
+    local UI = loadBundledUI()
+    window = UI:CreateWindow({
+        Title = "daxware mm2 farm manager", Status = "Farm coordination",
+        Version = "v1.4.1", Size = Vector2.new(700, 499),
+        Loading = true, LoadingDuration = 2.2, ToggleKey = Enum.KeyCode.RightControl,
+    })
+    local tab = window:AddTab({ Name = "Farm Manager", Icon = "coins", Description = "Farm and coordinate hosts" })
+    local farmGroup = tab:AddGroup({ side = "left", Title = "Auto Farm" })
+    farmGroup:AddToggle({ Name = "Auto Farm", Value = false, Callback = function(value)
+        settings.autoFarm = value
+        if not value then state.ReleaseClaim(true); releaseFarmMovement() end
+        updateFarmStatus(value and "Farming" or "Idle")
+    end })
+    farmGroup:AddSlider({ Name = "Farm speed", Min = 5, Max = 50, Step = 1, Value = farm.speed,
+        Suffix = " studs/s", Callback = function(value) farm.speed = value end })
+    farm.label = farmGroup:AddText({ Text = "Idle | Bag: 0/?" })
+    farmGroup:AddText({ Text = "Nearby coin reservations online. Normal autofarm when offline." })
+    farmGroup:AddToggle({ Name = "Anti-AFK", Value = false, Callback = function(value) state.SetAntiAFK(value) end })
+    farmGroup:AddText({ Text = "Bag tracking begins next round. Each selected host must run Farm Manager." })
+    local hostGroup = tab:AddGroup({ side = "right", Title = "Hosts" })
+    hostDropdown = hostGroup:AddDropdown({ Name = "Hosts", Options = {}, Value = {}, Multi = true,
+        Placeholder = "Select hosts...", MaxVisible = 6, Callback = function(names)
+            local selected = {}
+            for _, name in ipairs(names) do
+                local subject = Players:FindFirstChild(name)
+                if subject then selected[subject.UserId] = subject.Name
+                else
+                    for id, oldName in pairs(state.selectedHosts) do
+                        if oldName == name then selected[id] = oldName end
+                    end
+                end
+            end
+            state.selectedHosts = selected
+        end })
+    hostGroup:AddToggle({ Name = "Reset on all host coinbags full", Value = false,
+        Callback = function(value) settings.resetHosts = value end })
+    hostGroup:AddToggle({ Name = "Kill all on host full bag (host only)", Value = false,
+        Callback = function(value)
+            settings.hostKillAll = value
+            if not value and state.knifeAction then state.knifeAction.Cancel() end
+        end })
+    hostGroup:AddToggle({ Name = "Shoot murderer on full bag (host only)", Value = false,
+        Callback = function(value)
+            settings.hostShootMurderer = value
+            if not value and state.sheriffShot then state.sheriffShot.Cancel() end
+        end })
+    hostActionLabel = hostGroup:AddText({ Text = "Role actions: selected hosts only, after all selected bags are full." })
+    resetLabel = hostGroup:AddText({ Text = "Select at least one host" })
+    hostsLabel = hostGroup:AddText({ Text = "Selected: none" })
+    networkLabel = hostGroup:AddText({ Text = "Connecting to Worker..." })
+    hostGroup:AddButton({ Name = "Clear hosts", Callback = function() hostDropdown:Set({}); refreshHostOptions() end })
+    local mapGroup = tab:AddGroup({ side = "left", Title = "Map" })
+    mapGroup:AddToggle({ Name = "Avoid Infection LTM", Value = false,
+        Callback = function(value) settings.avoidInfection = value; state.mapVoteSignature = nil end })
+    mapVoteLabel = mapGroup:AddText({ Text = "When Barn is offered, vote for another map." })
+    local misc = window:AddTab({ Name = "Misc", Description = "Farm Manager controls" })
+    local group = misc:AddGroup({ side = "left" })
+    group:AddText({ Text = "Right Control toggles the window. Reset affects this character once per round." })
+    group:AddButton({ Name = "Unload", Callback = state.restore })
+    local emergencyGroup = misc:AddGroup({ side = "right", Title = "Emergency" })
+    local emergencyStatus = emergencyGroup:AddText({ Text = "Current server only. Includes this account." })
+    emergencyGroup:AddButton({ Name = "Kick All", Callback = function()
+        if not state.SocketHealthy() then
+            emergencyStatus:SetText("Worker disconnected. Emergency kick was not sent.")
+            return
+        end
+        local ok, result = pcall(state.SocketRPC, "kick_all", {})
+        if state.active then
+            emergencyStatus:SetText(ok and ("Sent to " .. tostring(result.targeted or 0) .. " manager sessions.")
+                or "Emergency kick failed: " .. tostring(result))
+        end
+    end })
+    table.insert(state.connections, window.gui.Destroying:Connect(state.restore))
+    table.insert(state.connections, Players.PlayerAdded:Connect(refreshHostOptions))
+    table.insert(state.connections, Players.PlayerRemoving:Connect(function() task.defer(refreshHostOptions) end))
+    state.OnAntiAFKError = function()
+        warn("Daxware Anti-AFK: virtual input unavailable in this executor")
+        networkLabel:SetText("Anti-AFK input unavailable in this executor")
+    end
+    refreshHostOptions()
+    startFarmObserver()
+    startSocketTransport()
+end, debug.traceback)
+if not initialized then state.restore(); error("Daxware Farm Manager: " .. tostring(failure)) end
+
+task.spawn(function()
+    while state.active do
+        local ok, err = pcall(refreshRoleCache)
+        if not ok then warn("Daxware role tracking: " .. tostring(err)) end
+        task.wait(0.75)
+    end
+end)
+task.spawn(function()
+    while state.active do
+        local ok, err = pcall(syncReports)
+        if not state.active then break end
+        if not ok then
+            state.CloseSocket(tostring(err))
+        end
+        task.wait(0.25) -- local change detection; no HTTP polling
+    end
+end)
+task.spawn(function()
+    while state.active do
+        local ready, message = hostReadiness()
+        local alreadyReset = state.roundStamp and state.resetRound == state.roundStamp
+        resetLabel:SetText(alreadyReset and "Reset completed for this round" or message)
+        local names = selectedNames()
+        hostsLabel:SetText("Selected: " .. (#names > 0 and table.concat(names, ", ") or "none"))
+        local acting = startHostBagAction()
+        if settings.resetHosts and ready and not acting and not state.hostActionBusy
+            and not alreadyReset and farmInMatch() then
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                state.resetRound = state.roundStamp
+                releaseFarmMovement()
+                humanoid.Health = 0
+            end
+        end
+        task.wait(0.2)
+    end
+end)
